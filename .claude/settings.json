@@ -1,0 +1,109 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__graphify__query_graph",
+      "mcp__graphify__get_neighbors",
+      "mcp__graphify__get_node",
+      "mcp__graphify__graph_stats",
+      "Bash(openspec status *)",
+      "Bash(openspec instructions *)",
+      "Bash(grep *)",
+      "Bash(python3 *)",
+      "Bash(python3 -c ' *)",
+      "Bash(bash .claude/scripts/*.sh)",
+      "Bash(node .claude/scripts/*)",
+      "Bash(mvn compile *)",
+      "Bash(mvn test-compile *)",
+      "Bash(mvn test -Dtest=*)",
+      "Edit(openspec/**)",
+      "Edit(openspec/**)",
+      "Edit(.remember/**)",
+      "Edit(.remember/**)",
+      "Edit(knowledge/**)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "WebSearch",
+      "Bash(mvn clean:*)",
+      "Bash(mvn dependency:tree)",
+      "Bash(mvn dependency:resolve -DincludeScope=compile -q)"
+    ],
+    "deny": [
+      "Read(**/*.properties)",
+      "Read(**/application.yml)",
+      "Read(**/application-*.yml)",
+      "Read(**/application-*.yaml)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "graphify"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check-dangerous.py"
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/scripts/telemetry-log.js", "--ask-user"]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/bug-pattern-check.js",
+            "async": true
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/scripts/telemetry-log.js", "--ask-done"]
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/scripts/telemetry-log.js", "--intervention"]
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/scripts/telemetry-log.js", "--session-start"]
+          }
+        ]
+      }
+    ]
+  }
+}

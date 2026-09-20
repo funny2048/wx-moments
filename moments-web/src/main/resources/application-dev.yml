@@ -1,0 +1,78 @@
+#Mybatis输出sql日志
+logging:
+  config: classpath:log4j2/log4j2-test.xml
+  file:
+    path: /data/logs/applog
+spring:
+  datasource:
+    dynamic:
+      druid: # 全局druid参数，绝大部分值和默认保持一致。(现已支持的参数如下,不清楚含义不要乱设置)
+        # 连接池的配置信息
+        # 初始化大小，最小，最大
+        initial-size: 5
+        min-idle: 5
+        maxActive: 20
+        # 配置获取连接等待超时的时间
+        maxWait: 5000
+        # 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒
+        timeBetweenEvictionRunsMillis: 60000
+        # 配置一个连接在池中最小生存的时间，单位是毫秒
+        minEvictableIdleTimeMillis: 300000
+        validationQuery: SELECT 1 FROM DUAL
+        testWhileIdle: true
+        testOnBorrow: false
+        testOnReturn: false
+        # 打开PSCache，并且指定每个连接上PSCache的大小
+        poolPreparedStatements: true
+        maxPoolPreparedStatementPerConnectionSize: 20
+        # 'wall'用于 用于预防 SQL 注入的filter
+        filters: wall
+        filter:
+          config:
+            enable: true
+        connectTimeout: 5000
+        socketTimeout: 60000 #socketTimeout建议为业务能够容忍的最大超时时间，不确定的情况下可适当调大，比如120s,即设置为120000
+      datasource:
+        master:
+          url: jdbc:mysql://localhost:3306/combo?useAffectedRows=true&characterEncoding=UTF-8&useUnicode=true&useSSL=false&tinyInt1isBit=false&serverTimezone=Asia/Shanghai
+          username: root
+          password: Astack@123
+          driver-class-name: com.mysql.cj.jdbc.Driver
+          # 多数据源配置
+          #multi-datasource1:
+          #url: jdbc:mysql://localhost:3306/jeecg-boot2?useUnicode=true&characterEncoding=utf8&autoReconnect=true&zeroDateTimeBehavior=convertToNull&transformedBitIsBoolean=true&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+          #username: root
+          #password: root
+          #driver-class-name: com.mysql.cj.jdbc.Driver
+
+# funny-redis-springboot-starter 配置（激活条件：配置 funny.redis.host）
+funny:
+  logging:
+    enabled: true
+    host: sample-web.funny.com
+  crypto:
+    enabled: true
+    model: local
+    app-key: demo-app-key-2024
+  sign:
+    enabled: true
+    host: http://localhost:8080/api
+  file:
+    cos:
+      secret-id: ${COS_SECRET_ID:}
+      secret-key: ${COS_SECRET_KEY:}
+      region: ${COS_REGION:ap-beijing}
+      bucket-name: ${COS_BUCKET:funny-1305062402}
+
+framework:
+  job:
+    accessToken: ''
+#    admin:
+#      addresses: http://framework-job.funny.com
+    executor:
+      address: ''
+      appname: ${spring.application.name}
+      ip: ''
+      logpath: ${logging.file.path}/jobhandler
+      logretentiondays: 30
+      port: 9999

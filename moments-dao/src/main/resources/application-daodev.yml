@@ -1,0 +1,97 @@
+spring:
+#  autoconfigure:
+#    exclude: com.alibaba.druid.spring.boot.autoconfigure.DruidDataSourceAutoConfigure
+  datasource:
+    dynamic:
+      druid: # 全局druid参数，绝大部分值和默认保持一致。(现已支持的参数如下,不清楚含义不要乱设置)
+        # 连接池的配置信息
+        # 初始化大小，最小，最大
+        initial-size: 5
+        min-idle: 5
+        maxActive: 20
+        # 配置获取连接等待超时的时间
+        maxWait: 5000
+        # 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒
+        timeBetweenEvictionRunsMillis: 60000
+        # 配置一个连接在池中最小生存的时间，单位是毫秒
+        minEvictableIdleTimeMillis: 300000
+        validationQuery: SELECT 1 FROM DUAL
+        testWhileIdle: true
+        testOnBorrow: false
+        testOnReturn: false
+        # 打开PSCache，并且指定每个连接上PSCache的大小
+        poolPreparedStatements: true
+        maxPoolPreparedStatementPerConnectionSize: 20
+        # 'wall'用于 用于预防 SQL 注入的filter
+        filters: wall
+        filter:
+          config:
+            enable: true
+        connectTimeout: 5000
+        socketTimeout: 60000 #socketTimeout建议为业务能够容忍的最大超时时间，不确定的情况下可适当调大，比如120s,即设置为120000
+      datasource:
+        master:
+          url: jdbc:mysql://localhost:3306/combo?useAffectedRows=true&characterEncoding=UTF-8&useUnicode=true&useSSL=false&tinyInt1isBit=false&serverTimezone=Asia/Shanghai
+          username: root
+          password: Astack@123
+          driver-class-name: com.mysql.cj.jdbc.Driver
+          # 多数据源配置
+          #multi-datasource1:
+          #url: jdbc:mysql://localhost:3306/jeecg-boot2?useUnicode=true&characterEncoding=utf8&autoReconnect=true&zeroDateTimeBehavior=convertToNull&transformedBitIsBoolean=true&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai
+          #username: root
+          #password: root
+          #driver-class-name: com.mysql.cj.jdbc.Driver
+
+# funny-redis-springboot-starter 配置（激活条件：配置 funny.redis.host）
+funny:
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    database: 0
+    password: ''
+    timeout: 3000
+    pool:
+      max-active: 8
+      max-idle: 8
+      max-wait: 3000
+      min-idle: 0
+  # base-data 行政区划（自动建表+种子+Guava 缓存预热+/province-city/list 与 /tree 查询端点）
+  data:
+    enabled: true
+  # base-operate-log 操作日志（默认启用，显式声明；@OperateLog 异步落库 base_operate_log）
+  operate-log:
+    enabled: true
+
+# funny-springboot-starter-mq 配置（激活条件：配置 funny.mq.host；默认注释关闭，无 MQ 环境不影响启动）
+# 需先执行 docs/sql/init.sql 中的 base_mq 建表
+#  mq:
+#    host: 127.0.0.1
+#    port: 5672
+#    username: guest
+#    password: guest
+#    virtual-host: /
+#    publisher-confirm: false      # true 时发送前落库 base_mq，broker ack 后标记成功
+#    retry:
+#      max-retry: 5
+#      batch-size: 50
+#      fixed-delay-ms: 60000
+#    manage:
+#      enabled: false              # true 开启 /framework/mq/** 运维接口
+#      token: change-me            # 运维接口令牌（请求头 X-Mq-Token）
+
+# funny-springboot-starter-es 配置（激活条件：配置 funny.es.uris；要求 ES 服务端 7.17+/8.x）
+#  es:
+#    uris: http://127.0.0.1:9200
+#    username: ''
+#    password: ''
+#    connect-timeout-ms: 3000
+#    socket-timeout-ms: 30000
+
+# base-task 可靠任务配置（激活条件：funny.task.enabled=true；默认注释关闭）
+# 需先执行 docs/sql/init.sql 中的 base_task 建表
+#  task:
+#    enabled: true                # 开启后自动装配（内置 @Scheduled 调度）
+#    max-retry: 5                 # 最大重试次数，超过置 FAILED 终态
+#    batch-size: 50               # 每轮拉取条数
+#    lock-timeout-ms: 10000       # 任务执行锁超时（多节点互斥）
+#    fixed-delay-ms: 60000        # 内置调度周期

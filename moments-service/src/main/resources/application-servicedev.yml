@@ -1,0 +1,16 @@
+feign:
+  hystrix:
+    enabled: false
+  httpclient:
+    enabled: false
+  okhttp:
+    enabled: true
+  client:
+    config:
+      default: # 默认配置
+        logger-level: FULL    #日志级别，NONE:无, BASIC:只有请求方法、URL、响应状态码、响应时间, HEADERS:在BASIC基础上增加请求和响应的HEADER, FULL:全部完整信息，开发调试建议使用FULL，线上建议使用NONE
+        connect-timeout: 3000 # 单位毫秒
+        read-timeout: 3000 # 单位毫秒
+    user-center-api:
+      host: http://localhost:8081/api
+      timeout: 3000 # 单位毫秒

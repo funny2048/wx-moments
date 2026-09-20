@@ -1,0 +1,63 @@
+spring:
+  application:
+    name: sample-web
+  profiles:
+    active: dev
+    group:
+      dev: daodev,servicedev
+      daodev: dao
+server:
+  tomcat:
+    threads:
+      max: 300
+      min-spare: 100
+    connection-timeout: 15000
+    mbeanregistry:
+      enabled: true
+  port: 8081
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+    context-path: /api
+  shutdown: graceful
+
+management:
+  server:
+    add-application-context-header: false # 禁用在响应头中添加应用上下文信息，这有助于减少潜在的安全风险，避免暴露应用内部结构。
+  endpoint:
+    health:
+      cache:
+        time-to-live: 10s # 设置健康检查结果的缓存时间为 10 秒，减少频繁检查的性能开销
+      probes:
+        enabled: true # 启用 Kubernetes 风格的存活 (liveness) 和就绪 (readiness) 探针
+  endpoints:
+    enabled-by-default: true #设置所有的端点默认为打开
+    web:
+      base-path: /
+      path-mapping:
+        health: health
+      exposure:
+        include: health,prestop # 只暴露健康检查和预停止 (prestop) 端点，提高安全性
+  health:
+    defaults:
+      enabled: false #关闭springboot内置的health检查
+    livenessstate:
+      enabled: true # 启用存活状态检查，用于 Kubernetes 判断应用是否需要重启
+    readinessstate:
+      enabled: true # 启用就绪状态检查，用于 Kubernetes 判断应用是否可以接收流量
+  metrics:
+    web:
+      server:
+        max-uri-tags: 10000
+        request:
+          autotime:
+            enabled: true
+  statsd:
+    metrics:
+      export:
+        flavor: telegraf
+        publish-unchanged-meters: true
+        polling-frequency: 10s
+        enabled: true

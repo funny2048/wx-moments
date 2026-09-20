@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Configuration后面的status，这个用于设置log4j2自身内部的信息输出，可以不设置，当设置成trace时，你会看到log4j2内部各种详细输出。 -->
+<!-- monitorInterval：Log4j能够自动检测修改配置 文件和重新配置本身，设置间隔秒数。 -->
+<configuration status="info" monitorInterval="30">
+    <!--先定义所有的appender -->
+    <properties>
+        <property name="log.path">/data/logs/applog</property>
+        <property name="log.root.level">INFO</property>
+        <property name="system">archtech</property>
+        <property name="project">sample</property>
+        <property name="env">online</property>
+        <!--日志文件保存天数-->
+        <property name="log.save.time">3d</property>
+    </properties>
+    <appenders>
+        <!--输出控制台的配置 -->
+        <Console name="Console" target="SYSTEM_OUT">
+            <!--控制台只输出level及以上级别的信息（onMatch），其他的直接拒绝（onMismatch） -->
+            <ThresholdFilter level="INFO" onMatch="ACCEPT"
+                             onMismatch="DENY" />
+            <!--输出日志的格式 -->
+            <PatternLayout
+                    pattern="%d{yyyy-MM-dd HH:mm:ss}`${system}`${project}`%highlight{%p}`%l`%m`%n" />
+
+        </Console>
+        <!-- 推送鹰眼日志  start -->
+        <!-- 运行日志 -->
+        <RollingFile name="ProgramRun" ignoreExceptions="false" fileName="${log.path}/project_run.log" filePattern="${log.path}/project_run.log_%d{yyyy-MM-dd}-%i">
+            <CsvLayout charset="UTF-8" system="${system}" project="${project}" env="${env}"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="500M"/>
+            </Policies>
+            <ThresholdFilter level="WARN" onMatch="DENY" onMismatch="ACCEPT"/>
+
+            <DefaultRolloverStrategy>
+                <Delete basePath="${log.path}/" maxDepth="1">
+                    <IfFileName glob="project_run.log_*"/>
+                    <IfLastModified age="${log.save.time}"/>
+                </Delete>
+            </DefaultRolloverStrategy>
+        </RollingFile>
+        <!-- 错误日志 -->
+        <RollingFile name="ProgramError" ignoreExceptions="false" fileName="${log.path}/project_error.log" filePattern="${log.path}/project_error.log_%d{yyyy-MM-dd}-%i">
+            <CsvLayout charset="UTF-8" system="${system}" project="${project}" env="${env}"/>
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+                <SizeBasedTriggeringPolicy size="500M"/>
+            </Policies>
+            <ThresholdFilter level="WARN" onMatch="ACCEPT" onMismatch="DENY"/>
+            <DefaultRolloverStrategy>
+                <Delete basePath="${log.path}/" maxDepth="1">
+                    <IfFileName glob="project_error.log_*"/>
+                    <IfLastModified age="${log.save.time}"/>
+                </Delete>
+            </DefaultRolloverStrategy>
+        </RollingFile>
+        <RollingFile name="SpringError" ignoreExceptions="false"
+                     fileName="${sys:log.path}/spring_error.log"
+                     filePattern="${sys:log.path}/spring_error_%d{yyyy-MM-dd}.log">
+            <Policies>
+                <TimeBasedTriggeringPolicy interval="1" modulate="true"/>
+            </Policies>
+            <ThresholdFilter level="WARN" onMatch="ACCEPT" onMismatch="DENY"/>
+            <DefaultRolloverStrategy>
+                <Delete basePath="${sys:log.path}/" maxDepth="1">
+                    <IfFileName glob="spring_error_*.log"/>
+                    <IfLastModified age="${sys:log.save.time}"/>
+                </Delete>
+            </DefaultRolloverStrategy>
+        </RollingFile>
+    </appenders>
+
+
+    <!--然后定义logger，只有定义了logger并引入的appender，appender才会生效 -->
+    <loggers>
+        <Logger name="org.springframework.boot.context.properties.ConfigurationPropertiesBindingPostProcessor"
+                level="WARN" includeLocation="false" additivity="false">
+            <appender-ref ref="SpringError"/>
+        </Logger>
+        <Root level="${sys:log.root.level}">
+            <appender-ref ref="Console"/>
+            <appender-ref ref="ProgramError"/>
+            <appender-ref ref="ProgramRun"/>
+        </Root>
+
+    </loggers>
+</configuration>

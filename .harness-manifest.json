@@ -1,0 +1,12 @@
+{
+  "installed": {
+    "at": "2026-09-20T23:01:09",
+    "tier": "daily",
+    "workflow-assets": "1.0.0",
+    "repo": "/Users/mac/open/ad-business-harness"
+  },
+  "knowledge": {
+    "domain-harness-init": null,
+    "java-harness-init": null
+  }
+}

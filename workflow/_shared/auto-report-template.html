@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>执行结果报告 - {{demand_name}}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fa; color: #333; padding: 20px; }
+  .report { max-width: 1000px; margin: 0 auto; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+
+  /* Header */
+  .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; padding: 32px 36px; }
+  .header h1 { font-size: 14px; font-weight: 500; opacity: 0.9; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 6px; }
+  .header h2 { font-size: 22px; font-weight: 600; line-height: 1.4; }
+
+  /* Info section */
+  .info { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 20px 36px; background: #fafbfc; border-bottom: 1px solid #e8ecf0; font-size: 13px; color: #555; }
+  .info-item { display: flex; align-items: center; gap: 6px; }
+  .info-item .label { color: #888; min-width: 80px; }
+  .info-item .value { color: #333; font-family: "SF Mono", Monaco, monospace; font-size: 12px; word-break: break-all; }
+
+  /* Content */
+  .content { padding: 24px 36px 36px; }
+
+  /* Stat cards */
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-bottom: 28px; }
+  .stat-card { border-radius: 10px; padding: 18px 16px; color: #fff; text-align: center; }
+  .stat-card .stat-number { font-size: 28px; font-weight: 700; line-height: 1.2; }
+  .stat-card .stat-label { font-size: 12px; opacity: 0.9; margin-top: 4px; }
+  .stat-blue { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+  .stat-cyan { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); }
+  .stat-green { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); }
+  .stat-red { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
+  .stat-purple { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
+
+  /* Section title */
+  .section-title { font-size: 16px; font-weight: 600; margin: 24px 0 12px; padding-left: 12px; border-left: 3px solid #667eea; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13px; }
+  th { background: #f0f2f5; padding: 10px 12px; text-align: left; font-weight: 600; color: #555; border-bottom: 2px solid #e0e4e8; }
+  td { padding: 10px 12px; border-bottom: 1px solid #edf0f4; }
+  tr:hover td { background: #f8f9fb; }
+  .num { text-align: right; font-family: "SF Mono", Monaco, monospace; font-size: 13px; }
+  .num-add { color: #22c55e; }
+  .num-del { color: #ef4444; }
+  .num-net { color: #3b82f6; }
+
+  /* Top files */
+  .file-list { list-style: none; font-size: 13px; }
+  .file-list li { padding: 6px 0; border-bottom: 1px solid #f0f2f5; font-family: "SF Mono", Monaco, monospace; font-size: 12px; color: #444; }
+  .file-list li:before { content: "📄 "; }
+
+  /* Test section */
+  .test-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+  .test-stats table { margin-bottom: 0; }
+  .test-chart { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .donut { position: relative; width: 100px; height: 100px; }
+  .donut svg { transform: rotate(-90deg); }
+  .donut-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; }
+  .donut-center .rate { font-size: 22px; font-weight: 700; color: #333; }
+  .donut-center .label { font-size: 11px; color: #888; }
+
+  /* Footer */
+  .footer { text-align: center; padding: 20px 36px; border-top: 1px solid #e8ecf0; font-size: 12px; color: #999; }
+</style>
+</head>
+<body>
+<div class="report">
+  <div class="header">
+    <h1>✦ 执行结果报告</h1>
+    <h2>{{demand_name}}</h2>
+  </div>
+
+  <div class="info">
+    <div class="info-item"><span class="label">Git 地址</span><span class="value">{{git_url}}</span></div>
+    <div class="info-item"><span class="label">基线 Commit</span><span class="value">{{base_commit}}</span></div>
+    <div class="info-item"><span class="label">当前 Commit</span><span class="value">{{current_commit}}</span></div>
+    <div class="info-item"><span class="label">Merge Base</span><span class="value">{{merge_base}}</span></div>
+  </div>
+
+  <div class="content">
+    <div class="stats">
+      <div class="stat-card stat-blue"><div class="stat-number">{{md_changed_files}}</div><div class="stat-label">MD 变更文件</div></div>
+      <div class="stat-card stat-cyan"><div class="stat-number">{{code_changed_files}}</div><div class="stat-label">代码文件变更</div></div>
+      <div class="stat-card stat-green"><div class="stat-number">+{{code_additions}}</div><div class="stat-label">新增行</div></div>
+      <div class="stat-card stat-red"><div class="stat-number">-{{code_deletions}}</div><div class="stat-label">删除行</div></div>
+      <div class="stat-card stat-purple"><div class="stat-number">{{code_net_additions}}</div><div class="stat-label">净增行</div></div>
+    </div>
+
+    <div class="section-title">分模块变更行数</div>
+    <table>
+      <thead><tr><th>模块</th><th>变更文件数</th><th>新增行</th><th>删除行</th><th>净增行</th></tr></thead>
+      <tbody>{{modules_rows}}</tbody>
+    </table>
+
+    <div class="section-title">主要更新文件 Top 5</div>
+    <ul class="file-list">{{top_files_list}}</ul>
+
+    <div class="section-title">测试统计</div>
+    <div class="test-grid">
+      <div class="test-stats">
+        <table>
+          <thead><tr><th>统计项</th><th>数值</th></tr></thead>
+          <tbody>
+            <tr><td>测试变更文件</td><td class="num">{{test_changed_files}}</td></tr>
+            <tr><td>测试新增行</td><td class="num num-add">+{{test_additions}}</td></tr>
+            <tr><td>测试删除行</td><td class="num num-del">-{{test_deletions}}</td></tr>
+            <tr><td>测试用例总数</td><td class="num">{{test_total_cases}}</td></tr>
+            <tr><td>测试通过数</td><td class="num num-add">{{test_passed_cases}}</td></tr>
+            <tr><td>通过率</td><td class="num">{{test_pass_rate}}%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="test-chart">
+        <div class="donut">
+          <svg width="100" height="100" viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#e8ecf0" stroke-width="10"/>
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#22c55e" stroke-width="10" stroke-linecap="round" stroke-dasharray="264 264" stroke-dashoffset="{{donut_offset}}"/>
+          </svg>
+          <div class="donut-center"><div class="rate">{{test_pass_rate}}%</div><div class="label">通过率</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">报告生成时间: {{report_date}}</div>
+</div>
+</body>
+</html>

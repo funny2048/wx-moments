@@ -1,0 +1,44 @@
+# Build output
+target/
+*/classes/
+
+# IDE - IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+/out/
+
+# IDE - Eclipse
+.classpath
+.project
+.settings/
+.flattened-pom.xml
+# IDE - VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Package files
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# Maven
+*.lastUpdated
+
+# Misc
+*.swp
+*.bak
+*.tmp
+*.orig
+__pycache__/
