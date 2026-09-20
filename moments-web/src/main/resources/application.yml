@@ -14,13 +14,12 @@ server:
     connection-timeout: 15000
     mbeanregistry:
       enabled: true
-  port: 8081
+  port: 8082
   servlet:
     encoding:
       charset: UTF-8
       enabled: true
       force: true
-    context-path: /api
   shutdown: graceful
 
 management:

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>首页导航 - 朋友圈实验室</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="page">
+    <div class="card">
+      <div class="card-title">快速开始</div>
+      <ol class="step-list">
+        <li>先到「模拟数据生成」页生成用户 / 好友 / 帖子数据</li>
+        <li>在顶部「当前视角」切换器选择一个用户（写入 Cookie）</li>
+        <li>去「发布」发一条朋友圈，回「Feed」滚动浏览</li>
+        <li>切换视角可验证 4 种可见范围的隐私效果</li>
+      </ol>
+    </div>
+
+    <div class="nav-grid" id="nav-grid">
+      <a class="nav-item" href="feed.html">
+        <span class="nav-icon" style="background:#07c160">Feed</span>
+        <span class="nav-item-text">
+          <span class="nav-item-title">朋友圈 Feed</span>
+          <span class="nav-item-desc">瀑布流滚动加载</span>
+        </span>
+      </a>
+      <a class="nav-item" href="post-create.html">
+        <span class="nav-icon" style="background:#576b95">发布</span>
+        <span class="nav-item-text">
+          <span class="nav-item-title">发布朋友圈</span>
+          <span class="nav-item-desc">文字 / 图片 / 可见范围</span>
+        </span>
+      </a>
+      <a class="nav-item" href="users.html">
+        <span class="nav-icon" style="background:#10aeff">用户</span>
+        <span class="nav-item-text">
+          <span class="nav-item-title">用户列表</span>
+          <span class="nav-item-desc">分页浏览 / 切换视角</span>
+        </span>
+      </a>
+      <a class="nav-item" href="friends.html">
+        <span class="nav-icon" style="background:#ffa940">好友</span>
+        <span class="nav-item-text">
+          <span class="nav-item-title">我的好友</span>
+          <span class="nav-item-desc">按标签过滤好友</span>
+        </span>
+      </a>
+      <a class="nav-item" href="friend-detail.html">
+        <span class="nav-icon" style="background:#ff8f4a">详情</span>
+        <span class="nav-item-text">
+          <span class="nav-item-title">好友详情</span>
+          <span class="nav-item-desc">资料 / 标签 / 其朋友圈</span>
+        </span>
+      </a>
+      <a class="nav-item" href="tags.html">
+        <span class="nav-icon" style="background:#6d7ee8">标签</span>
+        <span class="nav-item-text">
+          <span class="nav-item-title">标签管理</span>
+          <span class="nav-item-desc">新建 / 改名 / 删除</span>
+        </span>
+      </a>
+      <a class="nav-item" href="friend-tags.html">
+        <span class="nav-icon" style="background:#9c6de8">绑定</span>
+        <span class="nav-item-text">
+          <span class="nav-item-title">好友标签管理</span>
+          <span class="nav-item-desc">给好友绑定 / 解绑标签</span>
+        </span>
+      </a>
+      <a class="nav-item" href="mock-data.html">
+        <span class="nav-icon" style="background:#fa5151">数据</span>
+        <span class="nav-item-text">
+          <span class="nav-item-title">模拟数据生成</span>
+          <span class="nav-item-desc">批量初始化实验室数据</span>
+        </span>
+      </a>
+    </div>
+  </main>
+
+  <script src="assets/app.js"></script>
+  <script>
+    App.mountHeader('朋友圈实验室', { noBack: true });
+  </script>
+</body>
+</html>

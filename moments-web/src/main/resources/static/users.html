@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>用户列表 - 朋友圈实验室</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="page">
+    <div class="card">
+      <div class="card-title">用户列表<span class="title-extra" id="user-total"></span></div>
+      <div id="user-list">加载中...</div>
+      <div class="pager">
+        <button class="btn btn-plain btn-sm" id="btn-prev">上一页</button>
+        <span class="pager-info" id="pager-info"></span>
+        <button class="btn btn-plain btn-sm" id="btn-next">下一页</button>
+      </div>
+    </div>
+  </main>
+
+  <script src="assets/app.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      App.mountHeader('用户列表');
+
+      var PAGE_SIZE = 20;                       // api.md 接口1：pageSize 缺省 20，范围 1-500
+      var state = { pageNo: 1, totalPages: 1, total: 0 };
+
+      var listEl = document.getElementById('user-list');
+      var totalEl = document.getElementById('user-total');
+      var pagerInfo = document.getElementById('pager-info');
+      var btnPrev = document.getElementById('btn-prev');
+      var btnNext = document.getElementById('btn-next');
+
+      function rowHtml(u) {
+        var isCurrent = App.currentViewer() && String(u.userId) === String(App.currentViewer());
+        return '<div class="list-row">' +
+          '<img class="avatar" alt="头像" src="' + App.avatarSrc(u.avatar) +
+          '" onerror="this.onerror=null;this.src=App.DEFAULT_AVATAR">' +
+          '<div class="list-main">' +
+          '<div class="list-title">' + App.esc(u.nickname) +
+          '<span class="muted small">#' + App.esc(u.userId) + '</span>' +
+          (isCurrent ? '<span class="current-badge">当前</span>' : '') +
+          '</div>' +
+          '<div class="list-sub">' + App.esc(u.genderStr) + ' · ' + App.esc(u.city || '未知城市') +
+          ' · 注册于 ' + App.esc(u.createTimeStr) + '</div>' +
+          '</div>' +
+          '<div class="list-actions">' +
+          '<a class="btn btn-plain btn-sm" href="friend-detail.html?userId=' + App.esc(u.userId) + '">详情</a>' +
+          '<button class="btn btn-sm btn-switch" data-id="' + App.esc(u.userId) + '"' +
+          (isCurrent ? ' disabled' : '') + '>' + (isCurrent ? '已是当前' : '切换为当前用户') + '</button>' +
+          '</div>' +
+          '</div>';
+      }
+
+      async function load() {
+        listEl.innerHTML = '加载中...';
+        try {
+          // api.md 接口1：GET /api/users（pageNo/pageSize 传统分页，响应含 total）
+          var data = await App.api('/api/users?pageNo=' + state.pageNo + '&pageSize=' + PAGE_SIZE);
+          var users = (data && data.users) || [];
+          state.total = (data && data.total) || 0;
+          state.totalPages = Math.max(1, Math.ceil(state.total / PAGE_SIZE));
+          totalEl.textContent = '共 ' + state.total + ' 人';
+          listEl.innerHTML = users.length
+            ? users.map(rowHtml).join('')
+            : App.emptyHtml('本页无数据');
+          pagerInfo.textContent = '第 ' + state.pageNo + ' / ' + state.totalPages + ' 页';
+          btnPrev.disabled = state.pageNo <= 1;
+          btnNext.disabled = state.pageNo >= state.totalPages;
+        } catch (e) {
+          listEl.innerHTML = App.emptyHtml('加载失败，请确认服务已启动');
+          pagerInfo.textContent = '';
+          btnPrev.disabled = true;
+          btnNext.disabled = true;
+        }
+      }
+
+      btnPrev.addEventListener('click', function () {
+        if (state.pageNo > 1) { state.pageNo -= 1; load(); }
+      });
+      btnNext.addEventListener('click', function () {
+        if (state.pageNo < state.totalPages) { state.pageNo += 1; load(); }
+      });
+
+      // 切换为当前用户：写 Cookie mockUserId 并刷新本页（标记"当前"徽标）
+      listEl.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.btn-switch');
+        if (btn && !btn.disabled) {
+          App.setViewer(btn.getAttribute('data-id'));
+        }
+      });
+
+      load();
+    })();
+  </script>
+</body>
+</html>

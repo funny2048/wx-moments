@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funny.moments.dao.mapper.FriendshipMapper">
+
+    <!-- 好友关系表基础列（显式 resultMap，属性映射不依赖全局驼峰配置） -->
+    <resultMap id="BaseResultMap" type="com.funny.moments.dao.entity.FriendshipDO">
+        <id column="id" property="id"/>
+        <result column="user_id" property="userId"/>
+        <result column="friend_user_id" property="friendUserId"/>
+        <result column="created_stime" property="createdStime"/>
+        <result column="modified_stime" property="modifiedStime"/>
+        <result column="is_del" property="isDel"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, user_id, friend_user_id, created_stime, modified_stime, is_del
+    </sql>
+
+    <!-- 单向视角查好友 ID 集合：对称双记录（C11）保证 A 视角与 B 视角一致 -->
+    <select id="selectFriendIds" resultType="java.lang.Long">
+        SELECT friend_user_id
+        FROM friendship
+        WHERE user_id = #{userId}
+          AND is_del = 0
+    </select>
+
+    <!-- 好友关系存在性校验（计数>0 即存在；命中 idx/uniq_user_friend 前缀） -->
+    <select id="existsFriendship" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM friendship
+        WHERE user_id = #{userId}
+          AND friend_user_id = #{friendUserId}
+          AND is_del = 0
+    </select>
+
+    <!-- 批量插入（T090 复用）：对称双记录由调用方成对构造；DB uniq_user_friend 兜底防重 -->
+    <insert id="batchInsert">
+        INSERT INTO friendship (user_id, friend_user_id)
+        VALUES
+        <foreach collection="list" item="f" separator=",">
+            (#{f.userId}, #{f.friendUserId})
+        </foreach>
+    </insert>
+
+    <!-- 软删全部（T090 clear=true 复用）：带 WHERE 条件，禁全表裸 UPDATE -->
+    <update id="logicDeleteAll">
+        UPDATE friendship
+        SET is_del = 1
+        WHERE is_del = 0
+    </update>
+
+</mapper>

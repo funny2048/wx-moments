@@ -1,0 +1,914 @@
+# 测试用例: 20260920-social-timeline-mvp
+
+> 统计：入口 17 个（API 17 / Job 0 / MQ 0）| 用例 143 条 | 幂等三件套 26 条（9/9 写入口齐全，含非幂等口径断言：删标签 1004 / 删帖 1010 / 绑定 1008 / 解绑幂等成功 / 发帖连发 / 上传新文件）
+> 黑盒依据：api.md（17 接口契约）+ design.md §3/§5/§14 + sql.md（8 表）+ explore.md 七、语义闭环 Gate
+> 修订：2026-09-21 test-case-review-1 回炉——B1 隐私矩阵三路径断言修正（李四=[P0,P1,P2,P5]、赵六=[P0,P5]）、B2 双锚点数据量 200 帖、B3 TC058 裁决 1002 先行、B4 补删帖失败重试+tagId 无命中；建议级 9 条处置见文末「回炉修复记录」
+> 分批：批次1 = 入口1-10（TC001-TC072）；批次2 = 入口11-17（TC073-TC143）+ 页面级用例映射
+
+## 通用约定
+
+- 响应断言统一信封 ApiResult{code,msg,data}；下文"code=0"即成功
+- code=100 为框架兜底（未捕获异常），不设专用用例（异常注入实验室不实施）
+- viewerId 横切维度（B3/A3）在入口3 全维度覆盖（TC009-TC014），其余接口标注 [横切→TC009-014] 引用不重复展开
+- 三类异常承载（design §6.1）：①query/路径数值非数字 → TypeMismatch → 1001（TC003/006/017 等）②JSON body 字段类型非法 → HttpMessageNotReadable → 1001（TC080/088）③业务码 → BizException 透传
+- 写操作用例预期均含 DB 核对点（表.字段），供阶段六 tester 查库断言
+- 并发用例口径：终态断言（DB 字段/无数据损坏）为主，响应码组合列出可接受路径（竞态窗口不写死单一组合）
+
+## 测试数据基线（用例种子，explore 七 Q1 直接复用）
+
+- 基线 A · 种子五人组（触发型用例 @BeforeAll 直插 SQL，不走业务接口，可控 created_stime 至毫秒）
+  - user：张三(id=1)/李四(id=2)/王五(id=3)/赵六(id=4)/钱七(id=5)
+  - friendship（对称双记录，C11）：(1,2)(2,1)(1,3)(3,1)(1,4)(4,1) —— 钱七与张三非好友
+  - friend_tag（均归属张三 user_id=1）：同学(id=11)/同事(id=12)/朋友(id=13)
+  - friend_tag_relation：(11,李四2)/(12,王五3)/(13,王五3) —— 赵六无标签
+  - post：P0(id=104,t=10:00:01.000,type=1 公开,文+2图)/P1(id=101,t=10:00:00.000,type=3 标签[12同事]+好友[2李四])/P2(id=102,t=10:00:00.000,type=4 标签[12同事]+好友[4赵六])/P3(id=100,t=09:59:59.000,type=2 私密)/P4(id=99,t=09:59:58.000,type=3 空集)/P5(id=98,t=09:59:57.000,type=4 空集)
+  - post_image：P0 两图(sort=1,2)、P1 一图、其余 0
+  - post_visibility_tag：P1→[12]、P2→[12]；post_visibility_user：P1→[2]、P2→[4]
+  - 补充说明：P0 为矩阵补齐 type=1 公开帖（explore 规则②判定"详情直达场景对非好友生效"所需）；游标断言以"解码后匹配 ^\d{13}:\d{1,18}$ 且毫秒段=指定帖 created_stime 毫秒"为准（防时钟差异，不做字面相等）
+- 隐私投影速查（design §5.2 走查口径，review-1 B1 修正后唯一事实源）
+  - 张三（作者）：全部 6 帖
+  - 李四：[P0,P1,P2,P5]（P1 指定好友命中可见；P2 无命中可见；P3 私密/P4 空集不可见）
+  - 王五：[P0,P1,P5]（P1 标签"同事"命中可见；P2 标签命中被排除）
+  - 赵六：[P0,P5]（P2 指定排除名单命中 → 不可见；P1 无命中不可见）
+  - 钱七（非好友，详情/列表直达）：[P0,P2,P5]（同无命中投影；Feed 候选集天然不含张三帖）
+- 基线 B · mock 大数据（观测型用例）：POST /api/mock-data {userCount:100, avgFriendsPerUser:10}（详见入口11）
+- Feed 翻页链基准（张三视角, pageSize=2）：[P0,P2] → [P1,P3] → [P4,P5] hasMore=false
+
+## 入口清单与用例分布
+
+- 入口1-10：用户域(1/2)、好友域(3/4)、标签域(5-10) —— 本批次
+- 入口11-17：模拟数据(11)、帖子域(12/13/14/15)、Feed(16)、图片(17) —— 批次2
+
+---
+
+# 批次1：入口1-10（TC001-TC072）
+
+- 入口1：GET /api/users（API · 用户列表分页，T010）
+  - 参数维度（MECE）
+    - pageNo（Integer，可选）
+      - 有效：缺省=1 / 1 / 超大值（空页）
+      - 无效：0 / -1 / 非数字 abc
+    - pageSize（Integer，可选）
+      - 有效：缺省=20 / 1（下界）/ 500（上界，切换器场景）
+      - 无效：0 / 501 / 非数字 abc
+  - 业务场景
+    - TC001 分页主干-缺省默认值（覆盖：pageNo/pageSize 有效等价类缺省分支 + 字段完整性）
+      - 前置：基线 B 已生成（用户 ≥100）
+      - 入参：GET /api/users?_appId=moments-web（分页参数全缺省）
+      - 预期：code=0；total=库内用户总数；users ≤20 条；字段齐全：genderStr∈{未知,男,女}、createTimeStr 匹配 yyyy-MM-dd HH:mm:ss、avatar=/images/ 前缀
+      - 覆盖标签：[有效等价类-缺省默认][出参字段]
+    - TC002 pageSize 边界与超大页码（覆盖：1/500 边界 + 空页合法）
+      - 前置：同 TC001
+      - 入参：①pageNo=1&pageSize=500 ②pageNo=1&pageSize=1 ③pageNo=1000000&pageSize=20
+      - 预期：①code=0 users ≤500；②users ≤1；③code=0 users=[]（页码超界返回空页不报错）
+      - 覆盖标签：[边界值 1/500][空集行为]
+    - TC003 分页参数无效合并（覆盖：6 无效类合并，断言同码 1001）
+      - 前置：同 TC001
+      - 入参：pageNo 分别取 0/-1/abc；pageSize 分别取 0/501/abc（6 笔）
+      - 预期：6 笔均 code=1001（含 NB1：非数字由 TypeMismatch handler 转 1001 而非 100）
+      - 覆盖标签：[pageNo 无效×3 + pageSize 无效×3 合并][B2 显式越界拒绝][NB1 承载]
+    - TC004 空库查询
+      - 前置：8 表无业务数据（clear 后）
+      - 入参：GET /api/users
+      - 预期：code=0；total=0；users=[]（禁 null）
+      - 覆盖标签：[空集]
+
+- 入口2：GET /api/users/{userId}（API · 用户详情，T010）
+  - 参数维度（MECE）
+    - userId（Long 路径，必填）
+      - 有效：>0 存在
+      - 无效：0 / -1 / 非数字 abc / 不存在 / 已软删
+  - 业务场景
+    - TC005 主干详情（覆盖：单对象全字段）
+      - 前置：基线 A
+      - 入参：GET /api/users/2
+      - 预期：code=0；data.userId=2、nickname=李四、gender=1/genderStr=男、city、createTimeStr 格式合法
+      - 覆盖标签：[有效等价类][出参字段]
+    - TC006 userId 无效合并（覆盖：0/-1/abc → 同码 1001）
+      - 前置：基线 A
+      - 入参：GET /api/users/0、/api/users/-1、/api/users/abc
+      - 预期：均 code=1001（路径参数非数字同走 TypeMismatch 承载）
+      - 覆盖标签：[userId 无效×3 合并][NB1 路径参数承载]
+    - TC007 用户不存在
+      - 前置：基线 A
+      - 入参：GET /api/users/999999
+      - 预期：code=1002
+      - 覆盖标签：[业务状态-不存在]
+    - TC008 已软删用户
+      - 前置：将钱七 UPDATE is_del=1
+      - 入参：GET /api/users/5
+      - 预期：code=1002（is_del=0 过滤，含已删除语义）
+      - 覆盖标签：[软删全过滤]
+
+- 入口3：GET /api/friends（API · 我的好友列表 tagId 可选过滤，T020）
+  - 参数维度（MECE）
+    - viewerId（横切全维度在本入口覆盖）
+      - 有效：query 正常值 / Cookie 正常值 / query 优先于 Cookie
+      - 无效：query abc/0/-1/19 位超 Long（强校验 1001 不回退）；Cookie 脏值（宽松→1003）；双缺失（1003）
+    - tagId（Long，可选）
+      - 有效：>0 且归属当前用户（过滤命中 / **无命中-零绑定**）
+      - 无效：0/abc（1001）；不存在/非归属（1004）
+  - 业务场景
+    - TC009 主干-好友列表与 tagNames 组装（覆盖：有效等价类 + 多标签好友 + 无标签好友）
+      - 前置：基线 A
+      - 入参：GET /api/friends?viewerId=1
+      - 预期：code=0；data 含李四(tagNames=[同学])、王五(tagNames=[同事,朋友]，按标签 id 序)、赵六(tagNames=[])；不含钱七（非好友）
+      - 覆盖标签：[有效等价类][tagNames 去重口径]
+    - TC010 Cookie 视角生效
+      - 前置：基线 A
+      - 入参：GET /api/friends（Cookie: mockUserId=1）
+      - 预期：同 TC009
+      - 覆盖标签：[Cookie 解析]
+    - TC011 query viewerId 优先于 Cookie
+      - 前置：基线 A
+      - 入参：GET /api/friends?viewerId=1（Cookie: mockUserId=2）
+      - 预期：返回张三视角好友（李四/王五/赵六），非李四视角 —— query 覆盖生效
+      - 覆盖标签：[优先级 A3]
+    - TC012 viewer 缺失
+      - 前置：无 Cookie
+      - 入参：GET /api/friends（无 viewerId）
+      - 预期：code=1003
+      - 覆盖标签：[viewer 缺失]
+    - TC013 viewerId 显式非法-强校验（覆盖：B3 四类非法合并）
+      - 前置：Cookie: mockUserId=1（合法值在场）
+      - 入参：viewerId 分别取 abc / 0 / -1 / 1234567890123456789（19 位）
+      - 预期：均 code=1001，不静默回退 Cookie（显式参数错误显式暴露）
+      - 覆盖标签：[B3 强校验×4 合并][不回退 Cookie]
+    - TC014 Cookie 脏值-宽松处理
+      - 前置：Cookie: mockUserId=xyz
+      - 入参：GET /api/friends（无 viewerId）
+      - 预期：code=1003（脏值视为未选择，宽松不报 1001）
+      - 覆盖标签：[Cookie 脏值宽松]
+    - TC015 tagId 过滤命中（含 tagNames 全量断言）
+      - 前置：基线 A
+      - 入参：GET /api/friends?viewerId=1&tagId=12（同事）
+      - 预期：code=0；data 仅王五，且王五 tagNames 仍为**全量 [同事,朋友]**（tagNames 语义为该好友全量标签，非仅过滤标签——过滤分支不得缩水）
+      - 覆盖标签：[tagId 过滤-命中][tagNames 全量不缩水]
+    - TC016 tagId 过滤无命中（覆盖：合法标签零绑定空集，B4 补齐）
+      - 前置：张三 POST 创建标签"空组"（无任何绑定）
+      - 入参：GET /api/friends?viewerId=1&tagId={空组标签id}
+      - 预期：code=0；data=[]（合法标签+零绑定 → 空集，非报错）
+      - 覆盖标签：[tagId 过滤-无命中][MECE 分支落地]
+    - TC017 tagId 参数无效
+      - 前置：基线 A
+      - 入参：tagId=0、tagId=abc
+      - 预期：均 code=1001
+      - 覆盖标签：[tagId 无效×2 合并][NB1]
+    - TC018 tagId 不存在/非归属（覆盖：1004 两分支合并）
+      - 前置：基线 A
+      - 入参：①viewerId=1&tagId=999999 ②viewerId=2&tagId=12（李四用张三的标签）
+      - 预期：均 code=1004
+      - 覆盖标签：[1004 不存在+非归属合并][水平越权防护]
+    - TC019 无好友视角
+      - 前置：基线 A（钱七无好友）
+      - 入参：GET /api/friends?viewerId=5
+      - 预期：code=0；data=[]
+      - 覆盖标签：[空集]
+
+- 入口4：GET /api/friends/{userId}（API · 好友详情，T020）
+  - 参数维度（MECE）
+    - userId（Long 路径，必填）：有效存在 / 无效 0/abc（1001）/ 不存在（1002）
+    - viewerId：[横切→TC009-014]
+    - 业务状态：目标为好友（有标签）/ 非好友用户（读不禁止，tagNames=[]）
+  - 业务场景
+    - TC020 主干-好友详情含标签
+      - 前置：基线 A
+      - 入参：GET /api/friends/3?viewerId=1
+      - 预期：code=0；userId=3 王五、tagNames=[同事,朋友]、createTimeStr 合法
+      - 覆盖标签：[有效等价类][tagNames]
+    - TC021 userId 无效合并
+      - 入参：GET /api/friends/0、/api/friends/abc
+      - 预期：均 code=1001
+      - 覆盖标签：[userId 无效×2 合并][NB1]
+    - TC022 用户不存在
+      - 入参：GET /api/friends/999999?viewerId=1
+      - 预期：code=1002
+      - 覆盖标签：[不存在]
+    - TC023 查询非好友用户（覆盖：读非禁止语义）
+      - 前置：基线 A
+      - 入参：GET /api/friends/5?viewerId=1（钱七非张三好友）
+      - 预期：code=0；userId=5 基础信息、tagNames=[]（无绑定即空，接口不校验好友关系——异常码表无此码）
+      - 覆盖标签：[非好友读语义]
+    - TC024 viewer 缺失
+      - 入参：GET /api/friends/3（无 viewer）
+      - 预期：code=1003
+      - 覆盖标签：[横切引用]
+
+- 入口5：GET /api/friend-tags（API · 标签列表，T030）
+  - 参数维度（MECE）
+    - viewerId：[横切→TC009-014]
+    - 业务状态：有标签（friendCount 计数）/ 无标签（[]）
+  - 业务场景
+    - TC025 主干-标签列表与 friendCount
+      - 前置：基线 A
+      - 入参：GET /api/friend-tags?viewerId=1
+      - 预期：code=0；含同学(friendCount=1)/同事(1)/朋友(1)；createdTimeStr 合法
+      - 覆盖标签：[有效等价类][COUNT DISTINCT 口径]
+    - TC026 并发残留展示兜底（覆盖：建议4/建议8 展示侧去重）
+      - 前置：手工插入重复绑定 (12,王五) 第二条 is_del=0（模拟并发窗口残留）
+      - 入参：GET /api/friend-tags?viewerId=1 与 GET /api/friends?viewerId=1
+      - 预期：friendCount 仍=1（COUNT(DISTINCT)）；tagNames=[同事,朋友] 无重复（Stream.distinct）
+      - 覆盖标签：[并发残留-展示去重兜底]
+    - TC027 空标签用户
+      - 前置：钱七无标签
+      - 入参：GET /api/friend-tags?viewerId=5
+      - 预期：code=0；data=[]
+      - 覆盖标签：[空集]
+    - TC028 viewer 缺失/非法
+      - 入参：无 viewer；viewerId=abc
+      - 预期：分别 1003 / 1001
+      - 覆盖标签：[横切引用]
+
+- 入口6：POST /api/friend-tags（API · 创建标签，写，T030）
+  - 参数维度（MECE）
+    - tagName（String body，必填）
+      - 有效：trim 后 1-16 字（含前后空格 trim 语义 + **恰 16 字上界**）
+      - 无效：缺失/null/""/纯空格/trim 后 17 字（1001）
+    - 业务状态：同名存在（1005）/ 软删同名不占（可重建）
+  - 业务场景
+    - TC029 主干创建（覆盖：trim 语义 + 16 字上界 + DB 落库）
+      - 前置：基线 A，张三无"球友"标签
+      - 入参：①POST body {"tagName":"  球友  "} ②POST body {"tagName":"一二三四五六七八九十一二三四五六"}（恰 16 字）
+      - 预期：均 code=0；①data.tagName=球友 ②正常创建；DB：friend_tag 各 +1 行 (user_id=1, is_del=0)（①trim 后落库）
+      - 覆盖标签：[有效等价类][trim][16 字上界][DB 核对]
+    - TC030 tagName 无效合并
+      - 入参：tagName 分别取 null/""/"   "/"01234567890123456"（17 字）
+      - 预期：均 code=1001；DB friend_tag 0 新增
+      - 覆盖标签：[tagName 无效×4 合并]
+    - TC031 同名重复
+      - 前置：张三已有"同学"
+      - 入参：POST {"tagName":"同学"}
+      - 预期：code=1005；DB 0 新增（is_del=0 范围查重）
+      - 覆盖标签：[业务状态-同名]
+    - TC032 软删后同名重建（覆盖：软删不占查重语义）
+      - 前置：先执行 TC029① 创建"球友"（落库），再经 DELETE /api/friend-tags/{球友id} 删除（is_del=1）——准备手段自含
+      - 入参：POST {"tagName":"球友"}
+      - 预期：code=0；DB 新增 1 行（查重仅 is_del=0 范围）
+      - 覆盖标签：[软删查重范围][前置自含]
+  - 幂等性
+    - TC033 幂等-重复请求（覆盖：查重拦截语义幂等）
+      - 前置：无"队友"标签
+      - 入参：同一 {"tagName":"队友"} 连续提交 2 次
+      - 预期：第 1 次 code=0，第 2 次 code=1005；DB：friend_tag is_del=0 的 (1,'队友') 恰 1 行
+      - 覆盖标签：[幂等-重复][1005 拦截]
+    - TC034 幂等-并发
+      - 前置：无"队友"标签
+      - 入参：并发 2 笔 {"tagName":"队友"}
+      - 预期：可接受路径：{code=0, 1005} 或极端窗口 {0,0}（design §5.6 规则 5 留痕）；终态断言：is_del=0 同名 ≤2 行且列表/好友页 tagNames 展示无重复名
+      - 覆盖标签：[幂等-并发][窗口留痕][展示兜底联动]
+    - TC035 幂等-失败重试
+      - 前置：已有"同学"
+      - 入参：①POST {"tagName":"同学"} 失败 ②改 {"tagName":"老同学"} 重试 ③再 POST {"tagName":"同学"}
+      - 预期：①1005 ②code=0 ③1005 —— 失败可重试且结果确定，无残留
+      - 覆盖标签：[幂等-重试]
+  - 横切
+    - TC036 viewer 缺失
+      - 入参：POST {"tagName":"x"}（无 viewer）
+      - 预期：code=1003；DB 0 行
+      - 覆盖标签：[横切引用]
+
+- 入口7：PUT /api/friend-tags/{tagId}（API · 修改标签，写，T030）
+  - 参数维度（MECE）
+    - tagId（Long 路径）：无效 0/abc（1001）/ 不存在（1004）/ 非归属（1006）
+    - tagName（body）：无效 ""/17 字（1001）/ 与其他标签重名（1005）
+  - 业务场景
+    - TC037 主干改名（覆盖：只更新待更字段）
+      - 前置：基线 A，tagId=11"同学"
+      - 入参：PUT /api/friend-tags/11 {"tagName":"老同学"}?viewerId=1
+      - 预期：code=0；data.tagName=老同学、friendCount=1；DB：friend_tag.tag_name='老同学'（仅 tag_name/modified_stime 变，created_stime 不变）
+      - 覆盖标签：[有效等价类][最小更新实体][DB 核对]
+    - TC038 参数无效合并
+      - 入参：①tagId=0/abc（body 合法）②tagId=11 body tagName=""/17 字
+      - 预期：均 code=1001
+      - 覆盖标签：[tagId+tagName 无效合并][NB1]
+    - TC039 标签不存在
+      - 入参：PUT /api/friend-tags/999999 {"tagName":"x"}?viewerId=1
+      - 预期：code=1004
+      - 覆盖标签：[不存在]
+    - TC040 非归属人修改（覆盖：水平越权）
+      - 前置：tagId=11 属张三
+      - 入参：PUT /api/friend-tags/11 {"tagName":"hack"}?viewerId=2（李四）
+      - 预期：code=1006；DB tag_name 不变
+      - 覆盖标签：[1006 越权防护][DB 不变核对]
+    - TC041 新名与其他标签重名
+      - 前置：张三已有"同事"(12)
+      - 入参：PUT /api/friend-tags/11 {"tagName":"同事"}?viewerId=1
+      - 预期：code=1005；DB 不变
+      - 覆盖标签：[1005]
+    - TC042 改为自身现名（覆盖：查重排除自身语义）
+      - 前置：tagId=11"同学"
+      - 入参：PUT /api/friend-tags/11 {"tagName":"同学"}?viewerId=1
+      - 预期：code=0（自身同名非重复）；DB 不变
+      - 覆盖标签：[查重排除自身]
+  - 幂等性
+    - TC043 幂等-重复请求
+      - 入参：同一改名请求重放 2 次
+      - 预期：均 code=0；DB 终值唯一（重放不产生额外效果）
+      - 覆盖标签：[幂等-重复]
+    - TC044 幂等-并发
+      - 入参：并发 2 笔：tagId=11 改"名A" 与 改"名B"
+      - 预期：DB tag_name 终值为名A 或 名B 之一，无损坏/无空值
+      - 覆盖标签：[幂等-并发-后写覆盖]
+    - TC045 幂等-失败重试
+      - 入参：①改"同事"（1005）②修正为"新同学"重试
+      - 预期：①1005 ②code=0
+      - 覆盖标签：[幂等-重试]
+
+- 入口8：DELETE /api/friend-tags/{tagId}（API · 删除标签-级联软删，写，T030）
+  - 参数维度（MECE）
+    - tagId：无效 0/abc（1001）/ 不存在与已删（1004，非幂等）/ 非归属（1006）
+  - 业务场景
+    - TC046 主干-级联软删（覆盖：C13 两表级联 + 可见性表不动）
+      - 前置：基线 A，tagId=12"同事"绑定王五；P1/P2 引用标签 12
+      - 入参：DELETE /api/friend-tags/12?viewerId=1
+      - 预期：code=0 data=null；DB：friend_tag(12).is_del=1；friend_tag_relation 所有 tag_id=12 行 is_del=1；**post_visibility_tag 中 P1/P2 的 tag_id=12 行 is_del 仍=0**（不级联自然失效）
+      - 覆盖标签：[级联软删][可见性表不级联][DB 核对]
+    - TC047 删标签后隐私自然失效（覆盖：explore 规则⑥全语义）
+      - 前置：TC046 完成后（"同事"已删）
+      - 入参：①王五 GET /api/posts/{P1}?viewerId=3 ②李四 GET /api/posts/{P1}?viewerId=2 ③王五 GET /api/posts/{P2}?viewerId=3
+      - 预期：①1011（标签条件失效且无其他命中）②code=0（指定好友仍可见）③code=0（排除条件失效→变可见）
+      - 覆盖标签：[规则⑥隐私自然失效]
+    - TC048 tagId 无效
+      - 入参：DELETE /api/friend-tags/0、/api/friend-tags/abc
+      - 预期：均 code=1001
+      - 覆盖标签：[无效合并][NB1]
+    - TC049 标签不存在
+      - 入参：DELETE /api/friend-tags/999999?viewerId=1
+      - 预期：code=1004
+      - 覆盖标签：[不存在]
+    - TC050 非归属人删除
+      - 入参：DELETE /api/friend-tags/11?viewerId=2
+      - 预期：code=1006；DB 不变
+      - 覆盖标签：[1006 越权]
+    - TC051 缓存失效一致性（覆盖：INCR ftagver 后读新值）
+      - 前置：删除前先 GET /api/friends?viewerId=1（预热标签缓存）
+      - 入参：DELETE tagId=13 后再 GET /api/friends?viewerId=1
+      - 预期：王五 tagNames 不再含"朋友"（afterCommit 失效缓存，读路径回源新值）
+      - 覆盖标签：[缓存一致性 A4]
+  - 幂等性
+    - TC052 幂等-重复请求（含已删态再删同分支合并）
+      - 前置：tagId=11 存在
+      - 入参：DELETE tagId=11 二连发（第 2 次=已删态再删，与"不存在"走同一 selectById null/已删分支）
+      - 预期：第 1 次 code=0，第 2 次 code=1004（删标签非幂等，双击第二次报错属预期，前端 loading 防双击）；DB is_del 终态=1（单次变更）
+      - 覆盖标签：[幂等-重复][非幂等 1004][建议1][同路径合并]
+    - TC053 幂等-并发
+      - 前置：有效标签 11
+      - 入参：并发 DELETE 11 ×2
+      - 预期：可接受路径：{code=0, 1004} 或 {0,0}（先查后改窗口两笔均过校验、第二笔 UPDATE 0 行命中）；终态断言：DB(11).is_del=1、无数据损坏
+      - 覆盖标签：[幂等-并发][竞态可接受路径][终态为主]
+    - TC054 幂等-失败重试
+      - 入参：①DELETE 999999（1004）②DELETE 13 重试
+      - 预期：①1004 ②code=0
+      - 覆盖标签：[幂等-重试]
+
+- 入口9：POST /api/friend-tags/{tagId}/users/{userId}（API · 绑定好友标签，写，T030）
+  - 参数维度（MECE）
+    - tagId：无效 0/abc（1001）/ 不存在（1004）/ 非归属（1006）
+    - userId：无效 0/abc（1001）/ 用户不存在（1002，**裁决：存在性校验先于好友关系**）/ 非好友（1007）/ 已绑定（1008）
+  - 业务场景
+    - TC055 主干绑定（覆盖：有效等价类 + DB 落库）
+      - 前置：基线 A，赵六无标签
+      - 入参：POST /api/friend-tags/11/users/4?viewerId=1
+      - 预期：code=0 data=null；DB：friend_tag_relation +1 行 (tag_id=11, friend_user_id=4, is_del=0)
+      - 覆盖标签：[有效等价类][DB 核对]
+    - TC056 参数无效合并
+      - 入参：tagId=0 / tagId=abc / userId=0 / userId=abc
+      - 预期：均 code=1001
+      - 覆盖标签：[路径参数无效×4 合并][NB1]
+    - TC057 标签不存在/非归属（覆盖：1004+1006 合并）
+      - 入参：①tagId=999999/userId=4 ②tagId=11/userId=4?viewerId=2（李四用张三标签）
+      - 预期：①1004 ②1006；DB 0 行
+      - 覆盖标签：[1004/1006 合并][越权]
+    - TC058 目标用户不存在（裁决：1002 先于 1007）
+      - 入参：POST /api/friend-tags/11/users/999999?viewerId=1（用户不存在且必非好友）
+      - 预期：code=1002（主 agent 裁决定稿：bindUser 校验顺序=用户存在性(1002) 先于好友关系(1007)，design/api/tasks 三文档同步中，用例以裁决为准）
+      - 覆盖标签：[1002][校验顺序裁决 B3]
+    - TC059 非好友绑定（覆盖：1007 核心业务规则）
+      - 前置：钱七(5)存在但非张三好友（存在性校验通过的 1007 主路径）
+      - 入参：POST /api/friend-tags/11/users/5?viewerId=1
+      - 预期：code=1007；DB 0 行
+      - 覆盖标签：[1007 仅好友可打标]
+    - TC060 重复绑定（覆盖：1008 查重）
+      - 前置：TC055 已绑定 (11,4)
+      - 入参：再次 POST /api/friend-tags/11/users/4?viewerId=1
+      - 预期：code=1008；DB 该组合 is_del=0 仍 1 行
+      - 覆盖标签：[1008][INSERT 前查重]
+    - TC061 缓存失效一致性
+      - 前置：绑定 (12,3) 前先预热 GET /api/friends?viewerId=1
+      - 入参：POST 绑定王五"同事"后再 GET /api/friends?viewerId=1
+      - 预期：王五 tagNames 即时含"同事"（evictAll 后回源新值）
+      - 覆盖标签：[缓存一致性]
+  - 幂等性
+    - TC062 幂等-重复请求
+      - 入参：同一绑定请求二连发
+      - 预期：第 2 次 code=1008；DB (tag,friend) is_del=0 组合恰 1 行
+      - 覆盖标签：[幂等-重复][1008]
+    - TC063 幂等-并发（覆盖：design §5.6 规则 5 并发窗口）
+      - 前置：未绑定 (13,4)
+      - 入参：并发 2 笔 POST /api/friend-tags/13/users/4?viewerId=1
+      - 预期：可接受路径：{code=0, 1008} 或极端窗口 {0,0} 落 2 行 is_del=0；终态断言：展示侧 tagNames 去重 + friendCount=COUNT(DISTINCT) 不虚高（TC026 已验兜底）
+      - 覆盖标签：[幂等-并发][窗口留痕][展示兜底联动]
+    - TC064 幂等-失败重试（覆盖：失败不落库可修复重试）
+      - 前置：钱七非好友
+      - 入参：①绑钱七（1007）②SQL 补好友关系后重试同一请求
+      - 预期：①1007 DB 0 行 ②code=0 DB +1 行
+      - 覆盖标签：[幂等-重试][失败无残留]
+
+- 入口10：DELETE /api/friend-tags/{tagId}/users/{userId}（API · 解绑好友标签-幂等，写，T030）
+  - 参数维度（MECE）
+    - tagId/userId：无效 0/abc（1001）；tagId 不存在（1004）/ 非归属（1006）；绑定不存在=幂等成功（不报错）
+  - 业务场景
+    - TC065 主干解绑
+      - 前置：(12,3) 已绑定
+      - 入参：DELETE /api/friend-tags/12/users/3?viewerId=1
+      - 预期：code=0；DB：friend_tag_relation(12,3).is_del=1
+      - 覆盖标签：[有效等价类][DB 核对]
+    - TC066 幂等语义核心-未绑定也成功（覆盖：建议1 唯一幂等口径）
+      - 前置：(11,4) 从未绑定
+      - 入参：①DELETE /api/friend-tags/11/users/4?viewerId=1 ②对已解绑组合 (12,3) 再解绑一次
+      - 预期：均 code=0（0 行命中不报错）；DB 无变化
+      - 覆盖标签：[幂等-未绑定成功]
+    - TC067 解绑后重绑（覆盖：软删不占键-新 INSERT 语义）
+      - 前置：TC065 已解绑 (12,3)
+      - 入参：POST /api/friend-tags/12/users/3?viewerId=1
+      - 预期：code=0；DB：新增一条 is_del=0 记录（旧行 is_del=1 保留，新行 id 不同——无 DB 唯一键阻挡合法重绑）
+      - 覆盖标签：[软删重绑语义][sql.md §2 说明]
+    - TC068 参数与归属无效合并
+      - 入参：①tagId=0/userId=abc（1001）②tagId=999999（1004）③tagId=11?viewerId=2（1006）
+      - 预期：分别 1001 / 1004 / 1006
+      - 覆盖标签：[1001/1004/1006 合并]
+    - TC069 缓存失效一致性
+      - 前置：预热后解绑 (12,3)
+      - 入参：解绑后 GET /api/friends?viewerId=1
+      - 预期：王五 tagNames 即时不含"同事"
+      - 覆盖标签：[缓存一致性]
+  - 幂等性
+    - TC070 幂等-重复请求
+      - 入参：同一解绑请求二连发
+      - 预期：均 code=0；DB 单次效果
+      - 覆盖标签：[幂等-重复]
+    - TC071 幂等-并发
+      - 入参：并发 2 笔同一解绑
+      - 预期：均 code=0（或 1 笔 0 行幂等成功）；终态 is_del=1
+      - 覆盖标签：[幂等-并发]
+    - TC072 幂等-失败重试
+      - 入参：①解绑非归属标签（1006）②修正 viewer 重试
+      - 预期：①1006 ②code=0
+      - 覆盖标签：[幂等-重试]
+
+---
+
+# 批次2：入口11-17（TC073-TC143）
+
+- 入口11：POST /api/mock-data（API · 批量生成模拟数据，写，T090）
+  - 参数维度（MECE）
+    - userCount（Integer，可选）：缺省 100 / 边界 1、100000 / 越界 0、100001（1040）/ 类型非法 "abc"（1001）
+    - avgFriendsPerUser：缺省 10 / 边界 0、500 / 越界 -1、501（1040）；**avg=0 合法边界（生成 0 好友关系）不设专用用例，按 R10 留痕省略**（PRD 验收口径=1000+ 关系场景，0 好友为 Feed 空集已由 TC129 覆盖语义）
+    - extraTagsPerUser：缺省 0 / 边界 0、20 / 越界 21（1040）
+    - postCount：缺省 0 / 边界 0、10000 / 越界 10001（1040）
+    - clear（Boolean，可选）：缺省 false 追加 / true 清空重建
+  - 业务场景
+    - TC073 主干-全缺省默认配置（覆盖：缺省默认值 + 统计出参）
+      - 前置：空库（或 clear 后）
+      - 入参：POST {}（全字段缺省）
+      - 预期：code=0；userCount=100、friendshipRecords=friendshipPairs×2、tagCount=800（默认 8×100）、postCount=0、imagePoolSize=40；DB：user +100、friend_tag +800
+      - 覆盖标签：[缺省默认][统计出参][DB 核对]
+    - TC074 1000+ 好友关系验收（覆盖：对称性/自环/防重三断言，R5/C11）
+      - 前置：空库
+      - 入参：{"userCount":100,"avgFriendsPerUser":10}
+      - 预期：code=0；friendship 表记录 ≈1000（**容差 ±15%**，抖动来自 avg±3 随机；观测软校验不计红灯，<850 判红灯复核）；DB 断言：①∀记录(A,B) 存在对称 (B,A)（成对）②无 A=B 自环 ③无 (user_id,friend_user_id) 重复（uniq 兜底）
+      - 覆盖标签：[1000 关系][对称性][PRD 最低验收][容差 ±15%][观测软校验不计红灯]
+    - TC075 标签分布权重容差（覆盖：explore 规则⑦，观测型软校验；裁决3 口径定稿）
+      - 前置：TC074 数据
+      - 入参：SQL 抽样统计主标签占比
+      - 预期：**分母=好友关系对总数（主标签绑定数，不含 30% 次标签）**；同事 25%/同学 20%/朋友 25%/家人 5%/亲戚 5%/球友+客户 15%/其他 5%，各 ±5pp 容差；另存在多标签好友样本 >0（30% 次标签机制，王五=同事+朋友 同构）；观测软校验不计红灯
+      - 覆盖标签：[A9 分布][分母=关系对总数][±5pp][观测软校验不计红灯]
+    - TC076 clear=true 清空重建（覆盖：8 表清空 + 缓存失效中断语义）
+      - 前置：库内有基线 A 存量数据
+      - 入参：{"userCount":10,"avgFriendsPerUser":5,"clear":true}
+      - 预期：code=0；DB：8 张表旧业务数据全部 is_del=1（逐表断言），新数据 is_del=0；张三旧视角（预热过的缓存）再查好友列表=新生成集合（clear 段完成后即失效缓存）
+      - 覆盖标签：[clear 清空 8 表][缓存失效][DB 核对]
+    - TC077 追加模式（覆盖：clear=false 默认叠加）
+      - 前置：已有 100 用户
+      - 入参：{"userCount":10}（clear 缺省 false）
+      - 预期：code=0；user 总数=110（旧 100 is_del=0 保留 + 新 10）
+      - 覆盖标签：[追加语义 C15]
+    - TC078 配置越界（覆盖：1040 全字段合并）
+      - 入参：userCount=0/100001、avgFriendsPerUser=-1/501、extraTagsPerUser=-1/21、postCount=-1/10001（4 字段×2 越界=8 笔）
+      - 预期：均 code=1040（模拟配置专用码，区别于 1001）；DB 0 写入
+      - 覆盖标签：[1040×8 合并][B2 分流-配置类]
+    - TC079 postCount 帖子生成（覆盖：type 分布 + 可见性两表无放回抽样）
+      - 前置：空库
+      - 入参：{"userCount":20,"avgFriendsPerUser":5,"postCount":50}
+      - 预期：code=0；DB post +50（随机用户 1-2 帖）；type 分布≈40/20/20/20，**分母=生成帖子总数（50 小样本，容差 ±15pp）**；type=3/4 帖的 post_visibility_tag/post_visibility_user 无 (post_id,tag_id)/(post_id,user_id) 重复（shuffle+subList 无放回，R2-建议5）；观测软校验不计红灯
+      - 覆盖标签：[A8][分布容差 ±15pp][唯一键无撞][观测软校验不计红灯][DB 核对]
+    - TC080 body 类型非法（覆盖：R3 HttpMessageNotReadable 承载）
+      - 入参：{"userCount":"abc"}
+      - 预期：code=1001（非 100）
+      - 覆盖标签：[R3 承载]
+  - 幂等性
+    - TC081 幂等-重复请求（覆盖：追加=合法重复语义）
+      - 前置：已生成 100 用户
+      - 入参：同参 {"userCount":50} 二连发
+      - 预期：均 code=0；user 累计 +100（追加语义幂等口径：C15 合法重复，非去重）
+      - 覆盖标签：[幂等-重复-追加语义]
+    - TC082 幂等-并发与中断重试（覆盖：分批事务独立提交 + clear 中断恢复）
+      - 前置：空库
+      - 入参：①并发 2 笔 {"userCount":50}（自动化覆盖）②模拟生成中断（独立进程启动 + kill -9，JUnit 无法优雅停服务）后 {"clear":true,"userCount":100} 重跑（**手工验证项留痕**）
+      - 预期：①两笔各自分批提交无死锁，统计各自正确 ②重跑后库内=新 100 用户干净数据（已提交批次软删、缓存已失效）
+      - 覆盖标签：[幂等-并发][幂等-重试-中断恢复-手工项][R11 分批事务]
+
+- 入口12：POST /api/posts（API · 发布朋友圈-4 表事务，写，T060）
+  - 参数维度（MECE）
+    - content（String，可选）：有效 ≤2000（含纯空格 trim + **恰 2000 字上界**）/ 无效 trim 后 2001 字（1001）
+    - imageUrls（string[]，可选）：有效 1-9 张且**每项匹配 ^/images/[A-Za-z0-9._-]+$**（裁决1 前缀契约）/ 无效 10 张（1022）/ 前缀或文件名非法（1001）
+    - visibilityType（Integer，必填）：有效 1/2/3/4 / 无效 缺失/0/5/"abc"（1001）
+    - visibilityTagIds（long[]，可选）：type=3/4 生效；type=1/2 静默忽略；无效-不存在（1004）/非归属（1006）
+    - visibilityUserIds（long[]，可选）：type=3/4 生效；无效-不存在（1002）
+    - 组合约束：content 与 imageUrls 不得同空（含 content=纯空格+无图，trim 后同判 1001）
+    - viewerId：[横切→TC009-014]
+  - 业务场景
+    - TC083 主干-type=3 全参四表落库（覆盖：全字段有效等价类 + 4 表同事务）
+      - 前置：基线 A；张三标签 12、好友李四
+      - 入参：viewerId=1，body {content:"今天天气不错", imageUrls:["/images/c1.png","/images/c2.png"], visibilityType:3, visibilityTagIds:[12], visibilityUserIds:[2]}
+      - 预期：code=0；data.visibilityType=3/visibilityTypeStr=部分可见/status=1/imageUrls 顺序一致；DB：post +1 行(user_id=1,visibility_type=3,status=1,is_del=0)；post_image +2 行(sort=1,2 与入参顺序一致)；post_visibility_tag +1 行(post,12)；post_visibility_user +1 行(post,2)
+      - 覆盖标签：[有效等价类全量][4 表 DB 核对][sort 顺序]
+    - TC084 纯文字 type=1 + 2000 字上界（覆盖：最简形态 + content 有效上界）
+      - 入参：①{content:"纯文字", visibilityType:1} ②{content: 恰 2000 字, visibilityType:1}
+      - 预期：均 code=0；DB：post 各 +1；post_image/post_visibility_tag/post_visibility_user 均 +0
+      - 覆盖标签：[纯文][2000 字上界][最小落库]
+    - TC085 纯图 type=2 九图边界（覆盖：图上限边界 + 纯图形态）
+      - 入参：{imageUrls:[9 张 /images/ 路径], visibilityType:2}
+      - 预期：code=0；DB：post +1（type=2）、post_image +9（sort=1..9）、可见性两表 +0
+      - 覆盖标签：[9 图边界][纯图]
+    - TC086 type=1/2 携带可见性列表静默忽略（覆盖：建议10 定稿）
+      - 入参：{content:"x", visibilityType:1, visibilityTagIds:[999999（不存在）], visibilityUserIds:[2]}
+      - 预期：code=0（不校验不报错）；DB：可见性两表 +0（不落库）
+      - 覆盖标签：[静默忽略][微信语义]
+    - TC087 参数无效合并（覆盖：1001 多无效类）
+      - 入参：①visibilityType 缺失 ②visibilityType=0 ③visibilityType=5 ④content 与 imageUrls 同空（含 content="   " 纯空格+无图：trim 后为空同判）⑤content trim 后 2001 字
+      - 预期：均 code=1001；DB post 0 新增
+      - 覆盖标签：[1001×5 合并][联合校验-含 trim 空组合][失败无残留]
+    - TC088 body 类型非法（覆盖：R3 承载）
+      - 入参：{"visibilityType":"abc"}（字符串）
+      - 预期：code=1001（Jackson 反序列化失败经 Advice 转 1001，非 100）
+      - 覆盖标签：[R3 HttpMessageNotReadable]
+    - TC089 十图超限（覆盖：1022）
+      - 入参：{imageUrls:[10 张合法路径], visibilityType:1}
+      - 预期：code=1022；DB 4 表 0 新增
+      - 覆盖标签：[1022][事务无残留]
+    - TC090 imageUrls 前缀契约（覆盖：裁决1 新增契约）
+      - 前置：基线 A
+      - 入参：type=1，imageUrls 分别取 ①"http://evil.com/a.png"（外链）②"/static/a.png"（错误前缀）③"/images/../etc.png"（穿越式文件名，白名单 [A-Za-z0-9._-] 外含斜杠点段）
+      - 预期：均 code=1001（契约：每项须匹配 ^/images/[A-Za-z0-9._-]+$）；DB 4 表 0 行
+      - 覆盖标签：[裁决1 前缀+白名单][外链拒绝][穿越拒绝][失败无残留]
+    - TC091 visibilityTagIds 校验（覆盖：1004/1006 分列-错误码不同）
+      - 入参：①visibilityTagIds:[999999]（type=3）②visibilityTagIds:[李四的标签 id]（type=3，非张三归属）
+      - 预期：①1004 ②1006；DB 0 行
+      - 覆盖标签：[1004][1006][发布侧越权]
+    - TC092 visibilityUserIds 含不存在用户
+      - 入参：type=3, visibilityUserIds:[999999]
+      - 预期：code=1002；DB 0 行
+      - 覆盖标签：[1002 发布侧]
+    - TC093 指定列表去重（覆盖：distinct 落库）
+      - 入参：type=3, visibilityTagIds:[12,12], visibilityUserIds:[2,2]
+      - 预期：code=0；DB：post_visibility_tag 该帖恰 1 行、post_visibility_user 恰 1 行
+      - 覆盖标签：[去重][DB 核对]
+  - 幂等性
+    - TC094 幂等-重复请求（覆盖：非幂等=合法连发语义，design §5.6 规则7）
+      - 入参：同一 body 二连发
+      - 预期：均 code=0；DB post +2（同内容多发合法，无业务唯一键）；imageUrls 各自完整（4 表归属正确无交叉）
+      - 覆盖标签：[幂等-重复-连发语义]
+    - TC095 幂等-并发发帖
+      - 入参：并发 5 笔同作者不同内容
+      - 预期：均 code=0；DB post +5，每帖图片/可见性行 post_id 归属正确无串帖
+      - 覆盖标签：[幂等-并发][事务隔离]
+    - TC096 幂等-失败重试（覆盖：校验失败后修复重试 + 原子性）
+      - 入参：①type=3 visibilityTagIds:[999999]（1004 失败）②修正后重试成功
+      - 预期：①失败后 4 表 0 残留（事务原子）②code=0 4 表完整落库
+      - 覆盖标签：[幂等-重试][原子性][DB 核对]
+    - TC097 viewer 缺失
+      - 入参：合法 body，无 viewer
+      - 预期：code=1003；DB 0 行
+      - 覆盖标签：[横切引用]
+
+- 入口13：GET /api/posts/{postId}（API · 帖子详情-canView，T070）【隐私矩阵主战场-路径①详情直达】
+  - 参数维度（MECE）
+    - postId（Long 路径）：无效 0/abc（1001）/ 不存在与已删（1010）
+    - viewerId：[横切→TC009-014]
+    - 隐私矩阵：4 visibilityType × {作者/标签命中好友/指定好友/无命中好友/非好友}（explore 规则①-④）
+  - 业务场景-隐私矩阵（P0-P5 基线）
+    - TC098 主干-作者视角看 P1（覆盖：作者最高优先级 + 全字段出参）
+      - 前置：基线 A
+      - 入参：GET /api/posts/101?viewerId=1（张三）
+      - 预期：code=0；visibilityType=3/visibilityTypeStr=部分可见/status=1/imageUrls 按 sort 升序/createTimeStr 合法
+      - 覆盖标签：[作者优先级 Q4][出参字段]
+    - TC099 P0 公开帖-非好友直达（覆盖：规则② type=1 语义）
+      - 入参：GET /api/posts/104?viewerId=5（钱七非好友）
+      - 预期：code=0（公开对所有人可见，详情直达场景生效）
+      - 覆盖标签：[type1 公开][非好友直达]
+    - TC100 P3 私密帖-全视角合并（覆盖：规则③）
+      - 入参：viewerId 分别取 2/3/4/5 请求 P3(100)
+      - 预期：均 code=1011；张三(viewerId=1) → code=0（作者对私密帖也可见）
+      - 覆盖标签：[type2 拒绝×4 视角合并][作者豁免]
+    - TC101 P1 部分可见-命中双路径（覆盖：规则① 标签命中+指定好友命中）
+      - 入参：①王五(viewerId=3) 请求 P1（标签"同事"命中）②李四(viewerId=2) 请求 P1（指定好友命中）
+      - 预期：均 code=0
+      - 覆盖标签：[type3 tagHit][type3 userHit][OR 语义]
+    - TC102 P1 部分可见-无命中（覆盖：规则① 反例）
+      - 入参：①赵六(viewerId=4) ②钱七(viewerId=5) 请求 P1
+      - 预期：均 code=1011
+      - 覆盖标签：[type3 无命中×2 合并]
+    - TC103 P4 部分可见-空集（覆盖：规则④ C6 上半）
+      - 入参：viewerId=2/3/4/5 请求 P4(99)
+      - 预期：均 code=1011（空集两者皆 false ⇒ 不可见）
+      - 覆盖标签：[type3 空集][C6]
+    - TC104 P2 不给谁看-命中排除（覆盖：规则②）
+      - 入参：①王五(3)（标签"同事"命中）②赵六(4)（指定命中）请求 P2(102)
+      - 预期：均 code=1011
+      - 覆盖标签：[type4 命中排除×2 合并]
+    - TC105 P2 不给谁看-无命中可见（覆盖：规则② 正例）
+      - 入参：①李四(2)（无命中）②钱七(5)（非好友直达）请求 P2
+      - 预期：均 code=0
+      - 覆盖标签：[type4 无命中可见][非好友直达]
+    - TC106 P5 不给谁看-空集（覆盖：规则④ C6 下半）
+      - 入参：viewerId=2/3/4 请求 P5(98)
+      - 预期：均 code=0（空集 ⇒ 等同公开）
+      - 覆盖标签：[type4 空集=公开][C6]
+  - 业务场景-参数与状态
+    - TC107 postId 无效
+      - 入参：/api/posts/0、/api/posts/abc
+      - 预期：均 code=1001
+      - 覆盖标签：[无效合并][NB1]
+    - TC108 帖子不存在/已删（覆盖：1010 双分支）
+      - 入参：①/api/posts/999999 ②对 TC111 已软删帖请求
+      - 预期：均 code=1010
+      - 覆盖标签：[1010 不存在+已删合并]
+    - TC109 viewer 缺失
+      - 入参：GET /api/posts/101（无 viewer）
+      - 预期：code=1003
+      - 覆盖标签：[横切引用]
+    - TC110 已删帖作者本人也不可见（覆盖：软删全路径 R7-详情路径）
+      - 前置：SQL 直插 P6（张三帖 id=105, type=1, is_del=1，不依赖其他用例删除动作）
+      - 入参：GET /api/posts/105?viewerId=1
+      - 预期：code=1010（is_del 过滤先于作者判定）
+      - 覆盖标签：[软删优先][R7][前置自含]
+
+- 入口14：DELETE /api/posts/{postId}（API · 删除帖子-软删，写，T070）
+  - 参数维度（MECE）
+    - postId：无效 0/abc（1001）/ 不存在与已删（1010）/ 非本人帖（1012）
+  - 业务场景
+    - TC111 主干-作者软删（覆盖：C7 状态快照语义 + 图片保留）
+      - 前置：基线 A，P0(104) 存在
+      - 入参：DELETE /api/posts/104?viewerId=1
+      - 预期：code=0 data=null；DB：post(104).is_del=1 且 **status 仍=1**（业务态保留）；post_image/post_visibility_* 行不动（不级联）；图片文件仍在磁盘（D7）
+      - 覆盖标签：[软删][status 快照][DB 核对]
+    - TC112 删后三路径全不可见（覆盖：R7 详情/Feed/列表）
+      - 前置：TC111 完成
+      - 入参：①GET /api/posts/104?viewerId=1 ②GET /api/feed?viewerId=1&pageSize=50 ③GET /api/posts?userId=1&viewerId=1
+      - 预期：①1010 ②items 不含 P0 ③列表不含 P0
+      - 覆盖标签：[软删全路径][三路径合并]
+    - TC113 非作者删除（覆盖：1012 越权）
+      - 入参：DELETE /api/posts/101?viewerId=2（李四删张三帖）
+      - 预期：code=1012；DB is_del 不变
+      - 覆盖标签：[1012][越权][DB 不变]
+    - TC114 帖子不存在
+      - 入参：DELETE /api/posts/999999?viewerId=1
+      - 预期：code=1010
+      - 覆盖标签：[1010]
+    - TC115 参数与横切无效合并
+      - 入参：①postId=0/abc ②无 viewer
+      - 预期：分别 1001 / 1003
+      - 覆盖标签：[1001 合并][横切]
+  - 幂等性
+    - TC116 幂等-重复请求（含已删态再删同分支合并）
+      - 前置：P5(98) 存在
+      - 入参：对 P5 二连删（作者；第 2 次=已删态再删，与"不存在"走同一 selectById null/已删分支）
+      - 预期：第 1 次 code=0，第 2 次 code=1010（删帖非幂等，双击第二次报错属预期，前端 loading 防双击）；DB is_del 单次置 1
+      - 覆盖标签：[幂等-重复][非幂等 1010][建议1][同路径合并]
+    - TC117 幂等-并发删除（覆盖：作者并发 + 越权并发混合）
+      - 入参：并发 3 笔删 P1：作者×2 + 李四×1
+      - 预期：作者 2 笔可接受路径：{code=0, 1010} 或 {0,0}（先查后改窗口第二笔 0 行命中仍返回成功）；李四笔恒 1012；终态断言：is_del=1、无数据损坏
+      - 覆盖标签：[幂等-并发][竞态可接受路径][1012 竞态][终态为主]
+    - TC118 幂等-失败重试（覆盖：1012 越权→修正重试闭环，B4 补齐）
+      - 前置：基线 A，P1(101) 存在
+      - 入参：①DELETE /api/posts/101?viewerId=2（李四越权失败）②修正为 viewerId=1 重试同一删除
+      - 预期：①code=1012 DB 不变 ②code=0；DB P1.is_del=1（失败无残留、修正后闭环成功）
+      - 覆盖标签：[幂等-失败重试][1012→修正闭环]
+
+- 入口15：GET /api/posts?userId=（API · 指定用户帖子列表-limit 结果上限，T070）【隐私矩阵-路径②列表过滤】
+  - 参数维度（MECE）
+    - userId（Long query，必填）：缺失/0/abc（1001）/ 不存在（1002）
+    - limit（Integer，可选）：缺省 100 / 边界 1、500 / 越界 0、501、abc（1001）
+    - viewerId：[横切→TC009-014]
+  - 业务场景
+    - TC119 主干-作者全量与排序（覆盖：createTime DESC + 同秒 id DESC）
+      - 前置：基线 A 六帖
+      - 入参：GET /api/posts?userId=1&viewerId=1（limit 缺省）
+      - 预期：code=0；data=[P0,P2,P1,P3,P4,P5]（10:00:01 > 同秒 102>101 > 09:59:59 > 58 > 57）；每条 userId 恒=1
+      - 覆盖标签：[全量][排序 C8][同秒 id 倒序]
+    - TC120 隐私投影-命中视角（覆盖：规则①② 列表路径；B1 修正口径）
+      - 前置：基线 A
+      - 入参：①userId=1&viewerId=2（李四）②userId=1&viewerId=3（王五）
+      - 预期：①**李四=[P0,P1,P2,P5]**（P1 指定好友命中可见；P3 私密/P4 空集被滤）②王五=[P0,P1,P5]（P2 同事命中被排除）
+      - 覆盖标签：[隐私矩阵-列表][李四投影含 P1][王五投影]
+    - TC121 隐私投影-无命中与非好友（覆盖：规则②④ 列表路径；B1 修正口径）
+      - 入参：①userId=1&viewerId=4（赵六）②userId=1&viewerId=5（钱七非好友）
+      - 预期：①**赵六=[P0,P5]**（P2 指定排除名单命中 → 不可见；P1 无命中不可见）②钱七=[P0,P2,P5]（无命中投影：公开+type4 无命中+type4 空集）
+      - 覆盖标签：[隐私矩阵-列表][赵六投影不含 P2][非好友]
+    - TC122 limit 截断与边界（覆盖：结果上限语义）
+      - 前置：基线 A
+      - 入参：①limit=2 ②limit=1 ③limit=500
+      - 预期：①返回过滤后前 2 条 ②1 条 ③全量 ≤500
+      - 覆盖标签：[limit 结果上限][边界 1/500]
+    - TC123 放大补偿-截断点后旧公开帖不漏（覆盖：建议5 定稿）
+      - 前置：构造张三 10 帖：前 9 帖对李四全不可见（type=3 空集），第 10 帖旧公开帖
+      - 入参：userId=1&viewerId=2&limit=5
+      - 预期：code=0；data 含第 10 帖公开帖（limit×3×3 批扫描补偿，先截断后过滤不漏帖）
+      - 覆盖标签：[放大补偿][建议5]
+    - TC124 参数无效合并
+      - 入参：①userId 缺失 ②userId=0/abc ③limit=0/501/abc
+      - 预期：均 code=1001
+      - 覆盖标签：[1001×6 合并][NB1]
+    - TC125 目标用户不存在
+      - 入参：userId=999999&viewerId=1
+      - 预期：code=1002
+      - 覆盖标签：[1002]
+    - TC126 空集与横切
+      - 入参：①无帖用户 userId（钱七无帖）②无 viewer
+      - 预期：①code=0 data=[] ②1003
+      - 覆盖标签：[空集][横切]
+
+- 入口16：GET /api/feed（API · Feed 瀑布流-Cursor 双锚点，T080）【隐私矩阵-路径③ Feed】
+  - 参数维度（MECE）
+    - cursor（String，可选）：缺省首页 / 合法续传 / 非法-Base64 解码失败（!!!）/ 解码后格式不匹配 / id 段 19 位 / 毫秒段超 Long（均 1030）
+    - pageSize（Integer，可选）：缺省 20 / 边界 1、50 / 越界 0、51、abc（1001）
+    - viewerId：[横切→TC009-014]
+  - 业务场景-翻页链（规则⑤）
+    - TC127 主干-三页翻页链与同秒排序（覆盖：首页/中间页/末页/同秒 id DESC/无重复无跳空）
+      - 前置：基线 A 六帖
+      - 入参：viewerId=1&pageSize=2：①首页（无 cursor）②携 nextCursor 请求页2 ③页3
+      - 预期：①items=[P0,P2]、hasMore=true、nextCursor 解码匹配 ^\d{13}:\d{1,18}$ 且毫秒段=P2.created_stime 毫秒、id 段=102（示例形态 Base64("1789918203000:102")）②items=[P1,P3] ③items=[P4,P5]、hasMore=false、nextCursor=null；全程 6 帖无重复无跳空（同秒 P2>P1 按 id 倒序）
+      - 覆盖标签：[翻页链完整][同秒 id DESC][末页组合][毫秒格式游标][规则⑤]
+    - TC128 空页合法组合-双锚点（覆盖：B1 双锚点核心；数据量按 T080 验收口径重设）
+      - 前置：SQL 直插王五名下 **200 帖 type=3 空集**（对张三全不可见，created_stime 均新于基线六帖；created_stime 为 DATETIME 秒精度，200 帖同秒或跨秒均可——复合全序由 (created_stime, id) 双字段保证，同秒依赖 id 倒序区分）；推演：pageSize=20 → batchSize=60、maxRounds=3，3 批×60=180 条全不可见且均满批（200>180，第 3 批后候选流仍有剩余）→ scanEnd=false、collected=0
+      - 入参：①viewerId=1&pageSize=20 首页 ②携带返回的 nextCursor 续翻一次
+      - 预期：①**items=[]、hasMore=true、nextCursor≠null**（扫描进度锚点=第 180 条候选，解码匹配正则——合法组合出现）②跳过剩余 20 条不可见候选后单批扫尽（20+基线 6=26<60），items=基线 6 帖（作者全可见）、hasMore=false、nextCursor=null；已扫 180 条不重扫（无重复输出）
+      - 覆盖标签：[items=[]&hasMore=true&nextCursor≠null][双锚点 B1][≥9×pageSize=180 数据量][游标严格小于]
+    - TC129 空集行为（覆盖：Q5 无帖/无好友）
+      - 入参：①无帖新用户 viewerId ②钱七（无好友无帖）
+      - 预期：均 items=[]、nextCursor=null、hasMore=false（三字段组合完备）
+      - 覆盖标签：[空 Feed][Q5]
+    - TC130 cursor 非法四分支（覆盖：1030 + 不静默重置）
+      - 入参：cursor 分别取 ①"!!!"（Base64 解码失败）②Base64("abc")（格式不匹配）③Base64("1789918203000:1234567890123456789")（id 19 位超限）④Base64("99999999999999999999:1")（毫秒段超 Long）
+      - 预期：均 code=1030（不静默当首页）
+      - 覆盖标签：[1030×4 合并][R4][R2-建议7 双保险]
+    - TC131 pageSize 越界与边界
+      - 入参：①pageSize=0/51/abc ②pageSize=1 ③pageSize=50
+      - 预期：①均 1001 ②③code=0（items ≤1 / ≤50）
+      - 覆盖标签：[1001 合并][边界 1/50][B2]
+    - TC132 viewer 缺失
+      - 入参：GET /api/feed（无 viewer）
+      - 预期：code=1003
+      - 覆盖标签：[横切]
+  - 业务场景-隐私投影（矩阵-路径③）
+    - TC133 私密帖 SQL 预过滤（覆盖：A5 + B1 修正口径）
+      - 前置：基线 A
+      - 入参：viewerId=2&pageSize=50（李四视角，含张三六帖候选）
+      - 预期：items 含张三的 **[P0,P1,P2,P5]**（P1 指定好友命中可见），不含 P3（私密 SQL 预过滤）与 P4（canView 过滤）——与 TC120① 列表投影一致
+      - 覆盖标签：[隐私矩阵-Feed 李四含 P1][私密预过滤][三路径口径一致]
+    - TC134 非好友帖不入候选集（覆盖：Feed 候选=自己+好友）
+      - 前置：基线 A
+      - 入参：viewerId=5（钱七非张三好友）&pageSize=50
+      - 预期：items 不含张三任何帖（含 P0 公开——公开仅详情/列表直达可见，Feed 天然限好友圈，explore 规则②判定）
+      - 覆盖标签：[非好友候选排除][规则② Feed 判定]
+    - TC135 作者自见全部（覆盖：矩阵-Feed 作者行）
+      - 入参：viewerId=1&pageSize=50
+      - 预期：六帖全在（含 P3 私密、P4 空集——作者视角）
+      - 覆盖标签：[隐私矩阵-Feed 作者]
+    - TC136 观测-大数据翻页连续性（覆盖：keyset 稳定性，可判定口径）
+      - 前置：基线 B（mock 100 用户+postCount 帖子）
+      - 入参：viewerId=任一生成用户，循环携 nextCursor 拉取至 hasMore=false
+      - 预期：判定口径三条：①全程 postId 无重复 ②恰好终止于 hasMore=false（非异常中断）③拉取总数=DB 该 viewer 可见候选数抽样核对（SQL 按 canView 口径预计算对照）；观测软校验不计红灯
+      - 覆盖标签：[翻页连续性][可判定口径][观测软校验不计红灯]
+
+- 入口17：POST /api/images/upload（API · 本地图片上传，写 multipart，T040）
+  - 参数维度（MECE）
+    - file（file，必填）：有效-白名单 5 格式且 ≤5MB / 无效-缺失（1020）/ 扩展名非白名单（1020）/ >5MB（1021）
+  - 业务场景
+    - TC137 主干上传与访问（覆盖：UUID 文件名 + 静态映射 + 防穿越）
+      - 前置：服务启动（/images/** 映射就绪）
+      - 入参：png 文件 100KB
+      - 预期：code=0；data.imageUrl=/images/{32 位 UUID}.png；磁盘 rootPath 存在该文件；GET /images/{fileName} 返回 200；GET /images/../application.yml 返回 404（白名单解析器 R6）
+      - 覆盖标签：[有效等价类][UUID 防覆盖][防穿越][文件落盘核对]
+    - TC138 白名单与大小边界（覆盖：5 格式合并 + 5MB 边界）
+      - 入参：jpg/jpeg/png/gif/webp 各 1 笔（小文件）+ 1 笔恰 5MB 的 png
+      - 预期：均 code=0（5 格式 + 上界含边界成功）
+      - 覆盖标签：[白名单×5 合并][5MB 上界]
+    - TC139 格式拒绝
+      - 入参：.txt / .bat / 无扩展名 / 伪造内容改扩展名 .exe
+      - 预期：均 code=1020；磁盘无新文件
+      - 覆盖标签：[1020×4 合并]
+    - TC140 超限与缺失
+      - 入参：①5MB+1B 文件 ②不携带 file 字段的请求
+      - 预期：①1021 ②1020；磁盘无文件
+      - 覆盖标签：[1021][1020 缺失]
+  - 幂等性
+    - TC141 幂等-重复上传（覆盖：非幂等-每次新文件）
+      - 入参：同一文件二传
+      - 预期：均 code=0；两个不同 URL（UUID 不同）、磁盘两个文件（不覆盖）
+      - 覆盖标签：[幂等-重复-新文件语义]
+    - TC142 幂等-并发上传
+      - 入参：并发 3 笔同文件
+      - 预期：均 code=0；3 个不同文件名互不覆盖（UUID 唯一性）
+      - 覆盖标签：[幂等-并发][文件名隔离]
+    - TC143 幂等-失败重试
+      - 入参：①.txt 上传（1020）②修正为 png 重试
+      - 预期：①1020 无落盘 ②code=0 落盘
+      - 覆盖标签：[幂等-重试][失败无残留]
+
+---
+
+# 页面级用例映射（Playwright E2E，供阶段六后页面测试消费，不计入单入口 15 条限额）
+
+> 前提：dev 启动 + POST /api/mock-data {userCount:100, avgFriendsPerUser:10, postCount:50}；断言双通道=DOM 元素 + 后端 API 响应（design §13.2）
+
+- 页面1：index.html 导航
+  - 核心路径：9 页互达（点击每个入口链接 200 且关键容器渲染）
+- 页面2：users.html 用户列表与切换
+  - 核心路径：分页浏览 → 点"切换为当前用户" → Cookie mockUserId 写入 → 页面刷新后视角变化（好友页/Feed 页数据随之改变）
+- 页面3：friends.html 我的好友
+  - 核心路径：好友卡片渲染（头像/昵称/标签 chip）→ 按标签过滤（选"同事"只剩命中好友；选无绑定标签出空态）→ 空结果态
+- 页面4：friend-detail.html 好友详情与他的朋友圈
+  - 核心路径：基础信息+我打的标签 → "他的朋友圈"列表仅显示当前视角可见帖（API GET /api/posts?userId= 双通道核对）
+- 页面5：tags.html 标签 CRUD
+  - 核心路径：新建 → 改名 → 删除（二次确认）→ 删除后好友页标签 chip 消失；同名创建报 1005 Toast
+- 页面6：friend-tags.html 绑定/解绑管理
+  - 核心路径：选标签→勾选好友绑定（1007 非好友置灰或报错）→ 解绑 → 防抖按钮（双击不重复提交）
+- 页面7：mock-data.html 模拟数据生成器
+  - 核心路径：表单提交 → 统计结果展示；勾选 clear 弹 confirm 二次确认，取消不执行
+- 页面8：post-create.html 发布页
+  - 核心路径：纯文字发布 → 图片逐张上传（前端校验格式/5MB/9 张）→ 可见范围 4 选（type=3/4 时标签/好友多选器启用，type=1/2 置灰）→ 发布成功跳 Feed 并见新帖
+- 页面9：feed.html 朋友圈瀑布流
+  - 核心路径：首屏加载 → 滚动触底加载下一页（cursor 链）→ hasMore=false 停止 → 连续 3 次 items=[] 提示"暂无更多内容"（B1 前端停止规则）
+- 隐私视角切换矩阵（跨页面核心场景，P1-P5 种子；B1 修正口径，与接口用例 TC120/121/133 同源）
+  - 张三视角（Cookie=1）：Feed/个人主页见 P0-P5 全部
+  - 王五视角（Cookie=3）：见 P0/P1/P5，不见 P2/P3/P4（DOM 断言帖子数与 postId 集合）
+  - 李四视角（Cookie=2）：**见 P0/P1/P2/P5，不见 P3/P4**（P1 指定好友命中可见）
+  - 赵六视角（Cookie=4）：**见 P0/P5，不见 P1/P2/P3/P4**（P2 指定排除名单命中不可见）
+  - 钱七视角（Cookie=5）：Feed 无张三帖；直接访问 P0 详情页可见、P2 详情可见、P1/P3 详情拒绝态
+  - 切换操作：顶部切换器改 Cookie 后刷新，各页数据随视角变化（页面级隐私验证主场景）
+
+---
+
+## 覆盖核对（验收自查）
+
+- 入口覆盖：17/17 API（api.md §2 接口列表逐一映射；无 Job/MQ）；tasks.md 功能切片 T010/T020/T030/T040/T060/T070/T080/T090 全部命中
+- 错误码覆盖：1001/1002/1003/1004/1005/1006/1007/1008/1010/1011/1012/1020/1021/1022/1030/1040 全部有用例（100 为框架兜底不设专用例）；三类异常承载各有命中用例
+- 幂等三件套：9 个写入口（6/7/8/9/10/11/12/14/17）重复/并发/重试全部齐全（入口14 补齐失败重试 TC118；入口11 重试含手工验证项留痕 TC082②）；非幂等口径断言（删标签 1004/删帖 1010/绑定 1008/发帖连发/上传新文件/解绑幂等成功/mock 追加）均断言第二次请求实际响应态
+- 隐私矩阵：canView 4 visibilityType × 5 视角 × 3 路径（详情 TC098-106 / 列表 TC120-121 / Feed TC133-135），**三路径投影口径一致**（李四=[P0,P1,P2,P5]、王五=[P0,P1,P5]、赵六=[P0,P5]、钱七直达=[P0,P2,P5]，design §5.2 走查同源）；规则⑥ TC046/047；页面级矩阵同步修正
+- Feed 分页：首页/中间页/末页/同秒 id 排序/毫秒格式游标（TC127）、空页合法组合双锚点 ≥180 不可见候选（TC128）、cursor 伪造 4 分支（TC130）、前端 3 空页停止（页面9）
+- DB 核对点：全部写用例标注断言表与字段（含"不变核对"与"不级联核对"）；观测型 TC075/079/136 标软校验不计红灯且分母/容差已定稿
+- 单入口上限：最大入口12=15 条（≤15 边界内），其余 ≤13
+- 脑图兼容：纯缩进+列表符号，无 HTML 标签
+
+---
+
+# 回炉修复记录（test-case-review-1 处置留痕，2026-09-21）
+
+## 阻塞级（4/4 修复）
+
+- B1 隐私矩阵三路径断言自相矛盾 → 已修复：以 design §5.2 走查为唯一口径重算，李四投影=[P0,P1,P2,P5]（P1 指定好友命中）、赵六投影=[P0,P5]（P2 排除名单命中）；四处同源修正=TC120①（原 TC119①）、TC121①（原 TC120①）、TC133（原 TC132）、页面级矩阵李四/赵六两行；并在「测试数据基线」新增隐私投影速查表统一口径。钱七=[P0,P2,P5] 复核无误保持
+- B2 双锚点数据量不足 → 已修复：TC128 前置改为 SQL 直插 200 帖 type=3 空集（>9×pageSize=180，对齐 tasks T080 验收口径），附算法推演（3 批×60 满批、scanEnd=false）；续翻预期同步修正（剩余 20 不可见+基线 6 可见=26<60 单批扫尽 → items=基线 6 帖、hasMore=false）
+- B3 TC058 预期码悬空 → 已按裁决修复：主 agent 裁决校验顺序=用户存在性(1002) 先于好友关系(1007)，TC058 断言 1002 并标注裁决依据；TC059 明确"存在性校验通过的 1007 主路径"（钱七存在但非好友），1002/1007 两分支均可达且不依赖实现顺序歧义
+- B4 自查声明与事实不符 → 已修复：入口14 补 TC118 失败重试闭环（1012 越权→修正作者重试成功，对称 TC072 结构）；入口3 补 TC016 tagId 过滤无命中（合法标签零绑定 → data=[]）；统计行同步为真实计数
+
+## 建议级（9 条全部接受修复，0 拒绝）
+
+- 建议1 游标格式 → 接受：TC127 改为毫秒格式断言（解码匹配 ^\d{13}:\d{1,18}$、毫秒段=P2.created_stime、id 段=102），基线补"至毫秒可控 + 不做字面相等"约定
+- 建议2 并发预期竞态窗口 → 接受：TC053/TC117 改为"可接受路径 {…} 或 {…} + 终态断言为主"；通用约定新增并发口径条目（与 TC034/TC063 既有写法统一）
+- 建议3 有效上界缺失 → 接受：TC029 补 tagName 恰 16 字、TC084 补 content 恰 2000 字、TC087④ 补 content=纯空格+无图 trim 组合
+- 建议4 观测型口径 → 接受（按裁决3）：TC075 分母=好友关系对总数（主标签绑定数）、±5pp；TC079 分母=生成帖子总数、50 样本容差 ±15pp；两例均标注"观测软校验不计红灯"
+- 建议5 冗余合并 → 接受：原 TC049 并入 TC052（已删标签再删=二连删第 2 次同分支）、原 TC114 并入 TC116（已删帖再删同理），省 2 条用于 B4/裁决1 新增
+- 建议6 tagId 过滤视图 tagNames 全量 → 接受：TC015 预期补"王五 tagNames 仍为全量 [同事,朋友]（非仅过滤标签）"
+- 建议7 前置自含性 → 接受：TC032 前置改为"TC029① 产物 + 接口删除"（自含）；TC110 前置改为"SQL 直插 P6(is_del=1)"（不再引用不存在的删 P3 动作）
+- 建议8 中断手段可执行性 → 接受：TC082② 明确"独立进程启动 + kill -9"并标注手工验证项留痕，自动化仅覆盖并发分支①
+- 建议9 TC135 判定口径 → 接受：TC136（原 TC135）改为三条可判定口径（postId 无重复 / 恰终止于 hasMore=false / 拉取总数与 DB 可见候选数抽样核对）
+
+## 裁决落地（3/3）
+
+- 裁决1 imageUrls 前缀契约 → 已落地：入口12 参数维度声明 ^/images/[A-Za-z0-9._-]+$ 契约 + 新增 TC090（外链/错误前缀/穿越式三分支 → 1001，DB 0 行）
+- 裁决2 bindUser 校验顺序 → 已落地：TC058 断言 1002（用户存在先于好友关系），标注"design/api/tasks 三文档同步中，用例以裁决为准"
+- 裁决3 分布容差口径 → 已落地：TC075/TC079 分母、容差、软校验标注全部定稿（见建议4）
+
+## 编号影响
+
+- 净变化 +1（142→143）：入口3 +1（TC016）、入口8 -1（合并）、入口12 +1（TC090）、入口14 净 0（合并省 1 + 重试补 1）；TC073 前后区间平移，全文编号 TC001-TC143 连续
+
+## test-case-review-2 处置留痕（2026-09-21，PASS 后冻结前微调，最小改动）
+
+- 建议1 TC078 越界笔数笔误 → 已修复：入参补齐 extraTagsPerUser=-1、postCount=-1（4 字段×2 越界=8 笔，与声明计数对齐且 MECE 更完整）
+- 建议2 TC074 容差定稿 → 已修复：≈1000 容差明确 ±15%（avg±3 抖动来源注明），标注观测软校验不计红灯（<850 判红灯复核）
+- 建议3 avg=0 合法边界 → **选择 R10 留痕省略**（不补用例）：PRD 验收口径为 1000+ 好友关系场景（R10：本期只验收 1000+，10 万级属三期），avg=0 生成 0 好友关系的空集语义已由 TC129（无好友 Feed 空集三字段组合）覆盖；补用例将引发全文编号重排，违反本轮"最小改动、禁止结构调整"约束。留痕位置：入口11 参数维度 avgFriendsPerUser 行
+- 建议4 TC128 措辞 → 已修复："毫秒错开"改为"created_stime 为 DATETIME 秒精度，200 帖同秒或跨秒均可——复合全序由 (created_stime, id) 双字段保证，同秒依赖 id 倒序区分"（post 表排序键在秒精度下复合全序仍成立）
+- 编号影响：无（纯文本修订，TC001-TC143 与统计行不变）

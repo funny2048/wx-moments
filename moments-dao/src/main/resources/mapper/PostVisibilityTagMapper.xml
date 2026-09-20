@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 帖子指定标签表 Mapper（T060 建 files 含 batchInsert/logicDeleteAll；selectTagIdsByPostId 已由 T050
+     追加，禁动既有语句） -->
+<mapper namespace="com.funny.moments.dao.mapper.PostVisibilityTagMapper">
+
+    <!-- 指定标签表基础列（显式 resultMap，属性映射不依赖全局驼峰配置；T050 追加查询复用） -->
+    <resultMap id="BaseResultMap" type="com.funny.moments.dao.entity.PostVisibilityTagDO">
+        <id column="id" property="id"/>
+        <result column="post_id" property="postId"/>
+        <result column="tag_id" property="tagId"/>
+        <result column="created_stime" property="createdStime"/>
+        <result column="modified_stime" property="modifiedStime"/>
+        <result column="is_del" property="isDel"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, post_id, tag_id, created_stime, modified_stime, is_del
+    </sql>
+
+    <!-- 批量插入（发帖事务内仅 type=3/4；入参已去重防 uniq_post_tag 唯一键冲突整批回滚；T090 复用）：
+         post_id + tag_id，通用字段走 DB 默认值 -->
+    <insert id="batchInsert">
+        INSERT INTO post_visibility_tag (post_id, tag_id)
+        VALUES
+        <foreach collection="list" item="v" separator=",">
+            (#{v.postId}, #{v.tagId})
+        </foreach>
+    </insert>
+
+    <!-- 查询帖子指定标签（canView 的 tagHit 判定，design §5.2，T050 追加）：单列点查走 idx uniq_post_tag 前缀 -->
+    <select id="selectTagIdsByPostId" resultType="java.lang.Long">
+        SELECT tag_id
+        FROM post_visibility_tag
+        WHERE post_id = #{postId}
+          AND is_del = 0
+    </select>
+
+    <!-- 软删全部（T090 clear=true 复用）：带 WHERE 条件，禁全表裸 UPDATE -->
+    <update id="logicDeleteAll">
+        UPDATE post_visibility_tag
+        SET is_del = 1
+        WHERE is_del = 0
+    </update>
+
+</mapper>

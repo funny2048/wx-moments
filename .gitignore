@@ -42,3 +42,6 @@ logs/
 *.tmp
 *.orig
 __pycache__/
+
+# Playwright MCP local snapshots
+.playwright-mcp/

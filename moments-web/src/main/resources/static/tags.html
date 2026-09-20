@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>标签管理 - 朋友圈实验室</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="page">
+    <div id="viewer-required" class="banner-warn">
+      本页需要当前用户视角：请点击顶部「当前视角」选择一个用户，选择后页面自动刷新。
+    </div>
+
+    <div class="card">
+      <div class="card-title">新建标签</div>
+      <div class="form-row">
+        <input class="input" id="new-tag-name" maxlength="16" placeholder="标签名（1-16 字符）">
+        <button class="btn" id="btn-create">创建</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">我的标签<span class="title-extra" id="tag-count"></span></div>
+      <div id="tag-list">加载中...</div>
+    </div>
+  </main>
+
+  <script src="assets/app.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      App.mountHeader('标签管理');
+
+      var listEl = document.getElementById('tag-list');
+      var countEl = document.getElementById('tag-count');
+      var inputEl = document.getElementById('new-tag-name');
+      var btnCreate = document.getElementById('btn-create');
+      var tags = [];        // 服务端标签缓存（渲染与行内改名基线）
+      var editingId = null; // 正在行内改名的 tagId
+
+      function rowHtml(t) {
+        if (String(t.tagId) === String(editingId)) {
+          // 行内改名态
+          return '<div class="list-row" data-id="' + App.esc(t.tagId) + '">' +
+            '<div class="list-main"><div class="form-row">' +
+            '<input class="input tag-edit-input" maxlength="16" value="' + App.esc(t.tagName) + '">' +
+            '<button class="btn btn-sm btn-save-edit">保存</button>' +
+            '<button class="btn btn-plain btn-sm btn-cancel-edit">取消</button>' +
+            '</div></div></div>';
+        }
+        return '<div class="list-row" data-id="' + App.esc(t.tagId) + '">' +
+          '<div class="list-main">' +
+          '<div class="list-title">' + App.esc(t.tagName) + '</div>' +
+          '<div class="list-sub">' + App.esc(t.friendCount) + ' 位好友 · 创建于 ' + App.esc(t.createdTimeStr) + '</div>' +
+          '</div>' +
+          '<div class="list-actions">' +
+          '<a class="btn btn-plain btn-sm" href="friends.html?tagId=' + App.esc(t.tagId) + '">查看好友</a>' +
+          '<button class="btn btn-plain btn-sm btn-edit">改名</button>' +
+          '<button class="btn btn-danger btn-sm btn-delete">删除</button>' +
+          '</div></div>';
+      }
+
+      function render() {
+        countEl.textContent = '共 ' + tags.length + ' 个';
+        listEl.innerHTML = tags.length ? tags.map(rowHtml).join('') : App.emptyHtml('暂无标签');
+        var editInput = listEl.querySelector('.tag-edit-input');
+        if (editInput) {
+          editInput.focus();
+          editInput.setSelectionRange(editInput.value.length, editInput.value.length);
+        }
+      }
+
+      // api.md 接口5：GET /api/friend-tags（含每标签好友数）
+      async function load() {
+        if (!App.needViewer()) { listEl.innerHTML = App.emptyHtml('选择视角后展示标签'); return; }
+        listEl.innerHTML = '加载中...';
+        try {
+          tags = await App.api('/api/friend-tags') || [];
+          editingId = null;
+          render();
+        } catch (e) {
+          listEl.innerHTML = App.emptyHtml('加载失败');
+        }
+      }
+
+      // api.md 接口6：POST /api/friend-tags {tagName}
+      btnCreate.addEventListener('click', App.withLoading(btnCreate, '创建中', async function () {
+        if (!App.needViewer()) return;
+        var tagName = (inputEl.value || '').trim();
+        if (tagName.length < 1 || tagName.length > 16) {
+          App.toast('标签名须为 1-16 个字符');
+          return;
+        }
+        try {
+          await App.api('/api/friend-tags', { method: 'POST', body: { tagName: tagName } });
+          App.toast('创建成功');
+          inputEl.value = '';
+          await load();
+        } catch (e) {
+          /* api 已 toast（如 1005 标签名重复） */
+        }
+      }));
+      inputEl.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') btnCreate.click();
+      });
+
+      listEl.addEventListener('click', function (ev) {
+        var row = ev.target.closest('.list-row');
+        if (!row) return;
+        var tagId = row.getAttribute('data-id');
+        var tag = tags.filter(function (t) { return String(t.tagId) === String(tagId); })[0];
+
+        if (ev.target.closest('.btn-edit')) {
+          editingId = tagId;
+          render();
+          return;
+        }
+        if (ev.target.closest('.btn-cancel-edit')) {
+          editingId = null;
+          render();
+          return;
+        }
+        if (ev.target.closest('.btn-save-edit')) {
+          var input = row.querySelector('.tag-edit-input');
+          saveEdit(tagId, input ? input.value : '', ev.target.closest('.btn-save-edit'));
+          return;
+        }
+        if (ev.target.closest('.btn-delete')) {
+          deleteTag(tag, tag ? tag.tagName : '', ev.target.closest('.btn-delete'));
+        }
+      });
+
+      // api.md 接口7：PUT /api/friend-tags/{tagId} {tagName}
+      async function saveEdit(tagId, rawName, btn) {
+        var tagName = (rawName || '').trim();
+        if (tagName.length < 1 || tagName.length > 16) {
+          App.toast('标签名须为 1-16 个字符');
+          return;
+        }
+        var handler = App.withLoading(btn, '保存中', async function () {
+          try {
+            await App.api('/api/friend-tags/' + encodeURIComponent(tagId), { method: 'PUT', body: { tagName: tagName } });
+            App.toast('已保存');
+            editingId = null;
+            await load();
+          } catch (e) {
+            /* api 已 toast（1004/1005/1006） */
+          }
+        });
+        await handler();
+      }
+
+      // api.md 接口8：DELETE /api/friend-tags/{tagId}（级联软删绑定，非幂等，二次确认 + 防双击）
+      async function deleteTag(tag, tagName, btn) {
+        var msg = '确定删除标签「' + tagName + '」吗？\n该标签下所有好友的绑定关系将一并移除。';
+        if (!window.confirm(msg)) return;
+        var handler = App.withLoading(btn, '删除中', async function () {
+          try {
+            await App.api('/api/friend-tags/' + encodeURIComponent(tag.tagId), { method: 'DELETE' });
+            App.toast('已删除');
+            await load();
+          } catch (e) {
+            /* api 已 toast（1004/1006） */
+          }
+        });
+        await handler();
+      }
+
+      load();
+    })();
+  </script>
+</body>
+</html>

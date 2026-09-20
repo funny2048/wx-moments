@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>好友标签管理 - 朋友圈实验室</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="page">
+    <div id="viewer-required" class="banner-warn">
+      本页需要当前用户视角：请点击顶部「当前视角」选择一个用户，选择后页面自动刷新。
+    </div>
+
+    <div class="card">
+      <div class="card-title">选择好友<span class="title-extra">绑定 / 解绑 TA 的标签</span></div>
+      <select class="input" id="friend-select"><option value="">加载好友中...</option></select>
+    </div>
+
+    <div class="card" id="bind-card" style="display:none">
+      <div class="feed-head">
+        <img class="avatar" id="b-avatar" alt="头像" src="">
+        <div class="feed-head-main">
+          <div class="feed-name" id="b-nickname"></div>
+          <div class="list-sub" id="b-base"></div>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <div class="small muted" style="margin-bottom:8px">
+          点击标签切换绑定状态（绿色 = 已绑定）；仅可对好友打标签
+        </div>
+        <div class="tag-chips" id="bind-chips"></div>
+        <div style="margin-top:12px">
+          <a class="btn btn-plain btn-sm" href="tags.html">去新建 / 管理标签</a>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script src="assets/app.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      App.mountHeader('好友标签管理');
+
+      var selectEl = document.getElementById('friend-select');
+      var bindCard = document.getElementById('bind-card');
+      var chipsEl = document.getElementById('bind-chips');
+      var myTags = [];        // 我的全部标签（接口5）
+      var boundTagIds = [];   // 该好友当前已绑定 tagId（接口4 tagNames 关联）
+      var selectedUserId = null;
+      var detailCache = {};   // userId -> 好友详情（tagNames 组装基线）
+
+      // api.md 接口3：GET /api/friends（下拉数据源）
+      async function loadFriends() {
+        if (!App.needViewer()) {
+          selectEl.innerHTML = '<option value="">选择视角后加载好友</option>';
+          return;
+        }
+        try {
+          var friends = await App.api('/api/friends') || [];
+          if (!friends.length) {
+            selectEl.innerHTML = '<option value="">暂无好友，请先生成模拟数据</option>';
+            return;
+          }
+          var html = '<option value="">-- 选择好友 --</option>';
+          friends.forEach(function (f) {
+            html += '<option value="' + App.esc(f.userId) + '"' +
+              (String(f.userId) === String(selectedUserId) ? ' selected' : '') + '>' +
+              App.esc(f.nickname) + '（' + App.esc(f.userId) + '）</option>';
+          });
+          selectEl.innerHTML = html;
+          if (selectedUserId) selectEl.value = String(selectedUserId);
+        } catch (e) {
+          selectEl.innerHTML = '<option value="">好友加载失败</option>';
+        }
+      }
+
+      // api.md 接口5：GET /api/friend-tags（标签全集）
+      async function loadMyTags() {
+        try {
+          myTags = await App.api('/api/friend-tags') || [];
+        } catch (e) {
+          myTags = [];
+        }
+      }
+
+      // api.md 接口4：GET /api/friends/{userId}（好友详情含 tagNames → 已绑定态）
+      async function loadFriendDetail(userId) {
+        try {
+          var data = await App.api('/api/friends/' + encodeURIComponent(userId));
+          detailCache[userId] = data;
+          return data;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function renderBindPane(detail) {
+        bindCard.style.display = 'block';
+        document.getElementById('b-avatar').src = App.avatarSrc(detail.avatar);
+        document.getElementById('b-nickname').textContent = detail.nickname + '（#' + detail.userId + '）';
+        document.getElementById('b-base').textContent = (detail.genderStr || '未知') + ' · ' + (detail.city || '未知城市');
+
+        var boundNames = detail.tagNames || [];
+        // tagNames -> tagId 匹配（同名标签按 id 顺序取首个，展示口径与好友列表一致）
+        boundTagIds = myTags
+          .filter(function (t) { return boundNames.indexOf(t.tagName) !== -1; })
+          .map(function (t) { return String(t.tagId); });
+
+        chipsEl.innerHTML = myTags.length
+          ? myTags.map(function (t) {
+            var bound = boundTagIds.indexOf(String(t.tagId)) !== -1;
+            return '<button class="tag-toggle' + (bound ? ' bound' : '') + '" data-tag-id="' + App.esc(t.tagId) +
+              '" data-bound="' + (bound ? '1' : '0') + '">' + App.esc(t.tagName) + '</button>';
+          }).join('')
+          : App.emptyHtml('你还没有标签，先到「标签管理」创建');
+      }
+
+      async function onSelectFriend(userId) {
+        selectedUserId = userId;
+        if (!userId) { bindCard.style.display = 'none'; return; }
+        bindCard.style.display = 'block';
+        chipsEl.innerHTML = App.emptyHtml('加载中...');
+        if (!myTags.length) await loadMyTags();
+        var detail = detailCache[userId] || await loadFriendDetail(userId);
+        if (!detail) {
+          chipsEl.innerHTML = App.emptyHtml('好友信息加载失败');
+          return;
+        }
+        renderBindPane(detail);
+      }
+
+      // 绑定/解绑切换：绑定=接口9 POST；解绑=接口10 DELETE（幂等）；防双击
+      chipsEl.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.tag-toggle');
+        if (!btn || btn.disabled) return;
+        var tagId = btn.getAttribute('data-tag-id');
+        var isBound = btn.getAttribute('data-bound') === '1';
+        var tag = myTags.filter(function (t) { return String(t.tagId) === String(tagId); })[0];
+        var action = isBound ? '解绑' : '绑定';
+        if (!window.confirm('确定为该好友' + action + '标签「' + (tag ? tag.tagName : tagId) + '」吗？')) return;
+
+        App.withLoading(btn, '...', async function () {
+          var path = '/api/friend-tags/' + encodeURIComponent(tagId) + '/users/' + encodeURIComponent(selectedUserId);
+          try {
+            // 解绑后重绑走新记录：成功后清缓存刷新绑定态
+            await App.api(path, { method: isBound ? 'DELETE' : 'POST' });
+            App.toast(action + '成功');
+            delete detailCache[selectedUserId];
+            var detail = await loadFriendDetail(selectedUserId);
+            if (detail) renderBindPane(detail);
+          } catch (e) {
+            // 失败恢复原绑定态（api 已 toast：1004/1006/1007/1008 等）
+            var d = detailCache[selectedUserId];
+            if (d) renderBindPane(d);
+          }
+        })();
+      });
+
+      selectEl.addEventListener('change', function () {
+        onSelectFriend(selectEl.value || null);
+      });
+
+      (async function init() {
+        var preset = App.getQueryParam('userId');
+        if (preset && /^\d+$/.test(preset)) selectedUserId = preset;
+        await loadMyTags();
+        await loadFriends();
+        if (selectedUserId) onSelectFriend(selectedUserId);
+      })();
+    })();
+  </script>
+</body>
+</html>

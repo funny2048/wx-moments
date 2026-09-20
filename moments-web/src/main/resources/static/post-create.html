@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>发布朋友圈 - 朋友圈实验室</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="page">
+    <div id="viewer-required" class="banner-warn">
+      发布需要当前用户（作者）：请点击顶部「当前视角」选择一个用户，选择后页面自动刷新。
+    </div>
+
+    <div class="card">
+      <div class="field">
+        <div class="field-label"><span>这一刻的想法...</span><span class="counter" id="content-counter">0/2000</span></div>
+        <textarea class="input" id="post-content" maxlength="2000" rows="5"
+          placeholder="文字内容（可选，≤2000 字；与图片至少填一项）"></textarea>
+      </div>
+
+      <div class="field">
+        <div class="field-label"><span>图片</span><span class="counter" id="img-counter">0/9</span></div>
+        <div class="img-preview" id="img-preview">
+          <button type="button" class="p-add" id="btn-pick"><span class="plus">+</span>选图片</button>
+        </div>
+        <input type="file" id="file-input" multiple
+          accept=".jpg,.jpeg,.png,.gif,.webp,image/jpeg,image/png,image/gif,image/webp" style="display:none">
+        <div class="small muted" style="margin-top:6px">jpg / jpeg / png / gif / webp，单张 ≤5MB，最多 9 张</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="field" style="margin-bottom:0">
+        <div class="field-label"><span>谁可以看</span></div>
+        <div class="radio-group" id="visibility-group">
+          <label class="radio-item checked" data-type="1"><input type="radio" name="visibility" value="1" checked>公开</label>
+          <label class="radio-item" data-type="2"><input type="radio" name="visibility" value="2">私密（仅自己）</label>
+          <label class="radio-item" data-type="3"><input type="radio" name="visibility" value="3">部分可见</label>
+          <label class="radio-item" data-type="4"><input type="radio" name="visibility" value="4">不给谁看</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="visibility-picker" style="display:none">
+      <div class="card-title" id="picker-title">选择可见范围</div>
+      <div class="field">
+        <div class="field-label"><span>按标签（部分命中即可见/不可见）</span></div>
+        <div class="check-list" id="tag-check-list">加载中...</div>
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <div class="field-label"><span>按好友</span></div>
+        <div class="check-list" id="friend-check-list">加载中...</div>
+      </div>
+    </div>
+
+    <button class="btn btn-block" id="btn-publish">发表</button>
+  </main>
+
+  <script src="assets/app.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      App.mountHeader('发布朋友圈');
+
+      var ALLOWED_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+      var MAX_SIZE = 5 * 1024 * 1024;   // 5MB（api.md 接口17：1021）
+      var MAX_IMAGES = 9;               // api.md 接口12：1022
+
+      var contentEl = document.getElementById('post-content');
+      var counterEl = document.getElementById('content-counter');
+      var imgCounterEl = document.getElementById('img-counter');
+      var previewEl = document.getElementById('img-preview');
+      var btnPick = document.getElementById('btn-pick');
+      var fileInput = document.getElementById('file-input');
+      var visGroup = document.getElementById('visibility-group');
+      var pickerCard = document.getElementById('visibility-picker');
+      var pickerTitle = document.getElementById('picker-title');
+      var tagListEl = document.getElementById('tag-check-list');
+      var friendListEl = document.getElementById('friend-check-list');
+      var btnPublish = document.getElementById('btn-publish');
+
+      var imageUrls = [];        // 已上传图片 URL（顺序即 sort）
+      var uploading = false;
+      var visibilityType = 1;
+      var myTags = null;         // 懒加载：接口5
+      var myFriends = null;      // 懒加载：接口3
+
+      /* ---------- 文字与计数 ---------- */
+      contentEl.addEventListener('input', function () {
+        var len = contentEl.value.length;
+        counterEl.textContent = len + '/2000';
+        counterEl.classList.toggle('over', len > 2000);
+      });
+
+      /* ---------- 图片选择 / 上传 / 预览 ---------- */
+      function renderPreview() {
+        imgCounterEl.textContent = imageUrls.length + '/' + MAX_IMAGES;
+        var html = imageUrls.map(function (url, idx) {
+          return '<div class="p-item"><img alt="图片' + (idx + 1) + '" src="' + App.avatarSrc(url) +
+            '" onerror="this.onerror=null;this.src=App.DEFAULT_AVATAR">' +
+            '<button type="button" class="p-del" data-idx="' + idx + '" title="移除">×</button></div>';
+        }).join('');
+        var addBtn = '<button type="button" class="p-add" id="btn-pick"' +
+          (imageUrls.length >= MAX_IMAGES || uploading ? ' disabled' : '') + '><span class="plus">+</span>' +
+          (uploading ? '上传中' : '选图片') + '</button>';
+        previewEl.innerHTML = html + addBtn;
+        var newBtn = document.getElementById('btn-pick');
+        if (newBtn) {
+          newBtn.addEventListener('click', function () {
+            if (!newBtn.disabled) fileInput.click();
+          });
+        }
+      }
+
+      btnPick.addEventListener('click', function () { fileInput.click(); });
+
+      fileInput.addEventListener('change', async function () {
+        var files = Array.prototype.slice.call(fileInput.files || []);
+        fileInput.value = ''; // 允许重复选择同一文件
+        if (!files.length) return;
+        if (imageUrls.length + files.length > MAX_IMAGES) {
+          App.toast('单条朋友圈最多 ' + MAX_IMAGES + ' 张图片');
+          return;
+        }
+        for (var i = 0; i < files.length; i++) {
+          var f = files[i];
+          var ext = (f.name.split('.').pop() || '').toLowerCase();
+          if (ALLOWED_EXTS.indexOf(ext) === -1) {
+            App.toast('「' + f.name + '」格式不支持（仅 jpg/jpeg/png/gif/webp）');
+            continue;
+          }
+          if (f.size > MAX_SIZE) {
+            App.toast('「' + f.name + '」超过 5MB');
+            continue;
+          }
+          uploading = true;
+          renderPreview();
+          btnPublish.disabled = true;
+          try {
+            // api.md 接口17：POST /api/images/upload（multipart）→ {imageUrl}
+            var data = await App.uploadImage(f);
+            if (data && data.imageUrl) {
+              imageUrls.push(data.imageUrl);
+              renderPreview();
+            }
+          } catch (e) {
+            /* api 已 toast（1020/1021 等） */
+          } finally {
+            uploading = false;
+            btnPublish.disabled = false;
+            renderPreview();
+          }
+        }
+      });
+
+      previewEl.addEventListener('click', function (ev) {
+        var del = ev.target.closest('.p-del');
+        if (!del) return;
+        var idx = Number(del.getAttribute('data-idx'));
+        if (idx >= 0 && idx < imageUrls.length) {
+          imageUrls.splice(idx, 1);
+          renderPreview();
+        }
+      });
+
+      /* ---------- 可见范围四选 ---------- */
+      visGroup.addEventListener('change', function () {
+        var checked = visGroup.querySelector('input[type=radio]:checked');
+        visibilityType = checked ? Number(checked.value) : 1;
+        Array.prototype.forEach.call(visGroup.querySelectorAll('.radio-item'), function (item) {
+          item.classList.toggle('checked', Number(item.getAttribute('data-type')) === visibilityType);
+        });
+        // 公开 / 私密：选择器收起（提交时不携带标签/好友参数，design 建议10）
+        var needPicker = visibilityType === 3 || visibilityType === 4;
+        pickerCard.style.display = needPicker ? 'block' : 'none';
+        pickerTitle.textContent = visibilityType === 3 ? '部分可见：勾选可见的人' : '不给谁看：勾选不可见的人';
+        if (needPicker) loadPickerData();
+      });
+
+      async function loadPickerData() {
+        if (!App.needViewer()) return;
+        if (myTags === null) {
+          try {
+            myTags = await App.api('/api/friend-tags') || [];
+          } catch (e) { myTags = []; }
+          tagListEl.innerHTML = myTags.length
+            ? myTags.map(function (t) {
+              return '<label class="check-item"><input type="checkbox" value="' + App.esc(t.tagId) + '">' +
+                App.esc(t.tagName) + '（' + App.esc(t.friendCount) + '人）</label>';
+            }).join('')
+            : App.emptyHtml('暂无标签');
+        }
+        if (myFriends === null) {
+          try {
+            myFriends = await App.api('/api/friends') || [];
+          } catch (e) { myFriends = []; }
+          friendListEl.innerHTML = myFriends.length
+            ? myFriends.map(function (f) {
+              return '<label class="check-item"><input type="checkbox" value="' + App.esc(f.userId) + '">' +
+                App.esc(f.nickname) + '（#' + App.esc(f.userId) + '）</label>';
+            }).join('')
+            : App.emptyHtml('暂无好友');
+        }
+      }
+
+      function collectChecked(container) {
+        return Array.prototype.slice.call(container.querySelectorAll('input[type=checkbox]:checked'))
+          .map(function (c) { return Number(c.value); });
+      }
+
+      /* ---------- 发表 ---------- */
+      btnPublish.addEventListener('click', App.withLoading(btnPublish, '发表中', async function () {
+        if (!App.needViewer()) return;
+        if (uploading) { App.toast('图片还在上传中，请稍候'); return; }
+
+        var content = contentEl.value.trim();
+        // 联合校验（api.md 接口12）：content 与 imageUrls 不得同空；content ≤2000
+        if (!content && imageUrls.length === 0) {
+          App.toast('文字和图片至少填一项');
+          return;
+        }
+        if (content.length > 2000) {
+          App.toast('文字内容不能超过 2000 字');
+          return;
+        }
+        if (imageUrls.length > MAX_IMAGES) {
+          App.toast('单条朋友圈最多 9 张图片');
+          return;
+        }
+
+        var body = {
+          content: content,
+          imageUrls: imageUrls.slice(),
+          visibilityType: visibilityType
+        };
+        if (visibilityType === 3 || visibilityType === 4) {
+          body.visibilityTagIds = collectChecked(tagListEl);
+          body.visibilityUserIds = collectChecked(friendListEl);
+        }
+        try {
+          // api.md 接口12：POST /api/posts（作者=当前视角用户）
+          await App.api('/api/posts', { method: 'POST', body: body });
+          App.toast('发表成功，正在跳转 Feed...');
+          setTimeout(function () { window.location.href = 'feed.html'; }, 800);
+        } catch (e) {
+          /* api 已 toast（1001/1022/1003/1002/1004/1006） */
+        }
+      }));
+
+      renderPreview();
+    })();
+  </script>
+</body>
+</html>

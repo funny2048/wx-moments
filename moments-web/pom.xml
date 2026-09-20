@@ -28,6 +28,20 @@
             <groupId>com.funny</groupId>
             <artifactId>funny-springboot-starter-web</artifactId>
         </dependency>
+        <!-- 阶段六 dev 集成测试基座（MockMvc/JUnit5/JsonPath/Hamcrest），版本由 funny-springboot-starter-parent 的 spring-boot-dependencies 管理 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+            <!-- 项目日志栈为 log4j2（log4j-slf4j2-impl），排除 starter-logging（logback + log4j-to-slf4j），
+                 两者共存触发 Log4jLoggerFactory 冲突：log4j-slf4j2-impl cannot be present with log4j-to-slf4j -->
+            <exclusions>
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-logging</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
     </dependencies>
 
     <build>

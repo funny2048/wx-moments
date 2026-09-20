@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>好友详情 - 朋友圈实验室</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="page">
+    <div id="viewer-required" class="banner-warn">
+      本页需要当前用户视角：请点击顶部「当前视角」选择一个用户，选择后页面自动刷新。
+    </div>
+
+    <!-- 好友选择（未带 userId 进入时的入口） -->
+    <div class="card" id="picker-card" style="display:none">
+      <div class="card-title">选择一位好友</div>
+      <div id="picker-list">加载中...</div>
+    </div>
+
+    <!-- 好友详情 -->
+    <div id="detail-wrap" style="display:none">
+      <div class="card">
+        <div class="feed-head">
+          <img class="avatar avatar-lg" id="d-avatar" alt="头像" src="">
+          <div class="feed-head-main">
+            <div class="feed-name" style="font-size:17px" id="d-nickname"></div>
+            <div class="list-sub" id="d-base"></div>
+            <div class="list-sub" id="d-created"></div>
+          </div>
+        </div>
+        <div style="margin-top:10px">
+          <div class="small muted" style="margin-bottom:6px">我给 TA 打的标签</div>
+          <div class="tag-chips" id="d-tags"></div>
+          <div style="margin-top:10px">
+            <a class="btn btn-plain btn-sm" id="d-manage-tags" href="friend-tags.html">管理 TA 的标签</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="padding:10px 0 2px">
+        <div class="card-title" style="padding:0 14px 6px">TA 的朋友圈<span class="title-extra" id="post-count"></span></div>
+        <div id="post-list"></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="assets/app.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      App.mountHeader('好友详情');
+
+      var pickerCard = document.getElementById('picker-card');
+      var pickerList = document.getElementById('picker-list');
+      var detailWrap = document.getElementById('detail-wrap');
+      var postList = document.getElementById('post-list');
+
+      // 未带 userId：渲染好友选择列表（进入即选人）
+      async function showPicker() {
+        pickerCard.style.display = 'block';
+        detailWrap.style.display = 'none';
+        if (!App.needViewer()) { pickerList.innerHTML = App.emptyHtml('选择视角后可选择好友'); return; }
+        pickerList.innerHTML = '加载中...';
+        try {
+          var friends = await App.api('/api/friends') || [];
+          pickerList.innerHTML = friends.length
+            ? friends.map(function (f) {
+              return '<a class="list-row" href="friend-detail.html?userId=' + App.esc(f.userId) + '">' +
+                '<img class="avatar avatar-sm" alt="头像" src="' + App.avatarSrc(f.avatar) +
+                '" onerror="this.onerror=null;this.src=App.DEFAULT_AVATAR">' +
+                '<div class="list-main"><div class="list-title">' + App.esc(f.nickname) +
+                '<span class="muted small">#' + App.esc(f.userId) + '</span></div></div>' +
+                '<span class="small muted">查看 &gt;</span></a>';
+            }).join('')
+            : App.emptyHtml('暂无好友，可先到「模拟数据生成」页造数据');
+        } catch (e) {
+          pickerList.innerHTML = App.emptyHtml('加载失败');
+        }
+      }
+
+      async function loadDetail(userId) {
+        pickerCard.style.display = 'none';
+        detailWrap.style.display = 'block';
+        // api.md 接口4：GET /api/friends/{userId}（基础信息 + 我给其打的标签）
+        var data = await App.api('/api/friends/' + encodeURIComponent(userId));
+        document.getElementById('d-avatar').src = App.avatarSrc(data.avatar);
+        document.getElementById('d-nickname').textContent = data.nickname + '（#' + data.userId + '）';
+        document.getElementById('d-base').textContent = (data.genderStr || '未知') + ' · ' + (data.city || '未知城市');
+        document.getElementById('d-created').textContent = '注册于 ' + (data.createTimeStr || '-');
+        var tags = data.tagNames || [];
+        document.getElementById('d-tags').innerHTML = tags.length
+          ? tags.map(function (t) { return '<span class="tag-chip">' + App.esc(t) + '</span>'; }).join('')
+          : '<span class="small" style="color:#c9c9c9">未打标签</span>';
+        document.getElementById('d-manage-tags').href = 'friend-tags.html?userId=' + encodeURIComponent(userId);
+      }
+
+      // api.md 接口15：GET /api/posts?userId=（当前视角 canView 过滤后的 TA 的帖子）
+      async function loadPosts(userId) {
+        postList.innerHTML = App.emptyHtml('加载中...');
+        try {
+          var posts = await App.api('/api/posts?userId=' + encodeURIComponent(userId) + '&limit=100') || [];
+          document.getElementById('post-count').textContent = posts.length + ' 条可见';
+          postList.innerHTML = posts.length
+            ? posts.map(function (p) { return App.postCardHtml(p, { showVisibility: true, deletable: true }); }).join('')
+            : App.emptyHtml('TA 还没有你能看到的朋友圈');
+        } catch (e) {
+          postList.innerHTML = App.emptyHtml('加载失败');
+        }
+      }
+
+      App.bindPostDelete(postList, function () { loadPosts(currentUserId()); });
+
+      function currentUserId() { return App.getQueryParam('userId'); }
+
+      (async function init() {
+        var userId = currentUserId();
+        if (!userId || !/^\d+$/.test(userId)) {
+          await showPicker();
+          return;
+        }
+        if (!App.needViewer()) {
+          detailWrap.style.display = 'block';
+          pickerCard.style.display = 'none';
+          postList.innerHTML = App.emptyHtml('选择视角后展示 TA 的朋友圈');
+          return;
+        }
+        try {
+          await loadDetail(userId);
+        } catch (e) {
+          detailWrap.style.display = 'block';
+          document.getElementById('d-nickname').textContent = '用户不存在或加载失败';
+          postList.innerHTML = App.emptyHtml('加载失败');
+          return;
+        }
+        loadPosts(userId);
+      })();
+    })();
+  </script>
+</body>
+</html>

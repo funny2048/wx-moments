@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 标签-好友绑定表 Mapper（T020 建 files 含 selectTagNamesByOwnerAndFriends + selectFriendIdsByTag；
+     T030 追加 selectByTagAndUser/selectTagIdsOfFriend/updateIsDelByTagId/updateIsDelByTagAndUser/
+     batchInsert/logicDeleteAll，禁动 T020 既有语句） -->
+<mapper namespace="com.funny.moments.dao.mapper.FriendTagRelationMapper">
+
+    <!-- 绑定表基础列（显式 resultMap，属性映射不依赖全局驼峰配置；T030 追加方法复用） -->
+    <resultMap id="BaseResultMap" type="com.funny.moments.dao.entity.FriendTagRelationDO">
+        <id column="id" property="id"/>
+        <result column="tag_id" property="tagId"/>
+        <result column="friend_user_id" property="friendUserId"/>
+        <result column="created_stime" property="createdStime"/>
+        <result column="modified_stime" property="modifiedStime"/>
+        <result column="is_del" property="isDel"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, tag_id, friend_user_id, created_stime, modified_stime, is_del
+    </sql>
+
+    <!-- 批量组装 tagNames：两表 join 限定标签归属 owner（2 表 join，符合 &le;3 表约束）；
+         GROUP BY 防并发绑定残留同 (friend, tagName) 多行（design §5.6 规则5）；
+         列别名对齐 DTO 驼峰属性；空集合由 Service 前置拦截，不进入本 SQL -->
+    <select id="selectTagNamesByOwnerAndFriends" resultType="com.funny.moments.dao.dto.FriendTagNameDTO">
+        SELECT r.friend_user_id AS friendUserId, t.tag_name AS tagName
+        FROM friend_tag_relation r
+        JOIN friend_tag t ON t.id = r.tag_id
+            AND t.user_id = #{ownerId}
+            AND t.is_del = 0
+        WHERE r.is_del = 0
+          AND r.friend_user_id IN
+        <foreach collection="friendIds" item="fid" open="(" separator="," close=")">
+            #{fid}
+        </foreach>
+        GROUP BY r.friend_user_id, t.tag_name, r.tag_id
+        ORDER BY r.friend_user_id ASC, r.tag_id ASC
+    </select>
+
+    <!-- 按标签查好友 ID：tagId 过滤分支数据源（归属校验已由 FriendTagMapper.selectByTagId 前置完成） -->
+    <select id="selectFriendIdsByTag" resultType="java.lang.Long">
+        SELECT friend_user_id
+        FROM friend_tag_relation
+        WHERE tag_id = #{tagId}
+          AND is_del = 0
+    </select>
+
+    <!-- 绑定查重（bindUser 1008 前置）：LIMIT 1 取单条，并发残留双行时存在性语义不变（design §5.6 规则5） -->
+    <select id="selectByTagAndUser" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM friend_tag_relation
+        WHERE tag_id = #{tagId}
+          AND friend_user_id = #{friendUserId}
+          AND is_del = 0
+        LIMIT 1
+    </select>
+
+    <!-- owner 给好友打的标签 ID 集合（缓存回源）：join 限定 t.user_id = ownerId 防跨 owner 串标签；
+         并发残留重复行由消费侧转 Set 去重 -->
+    <select id="selectTagIdsOfFriend" resultType="java.lang.Long">
+        SELECT r.tag_id
+        FROM friend_tag_relation r
+        JOIN friend_tag t ON t.id = r.tag_id
+            AND t.user_id = #{ownerId}
+            AND t.is_del = 0
+        WHERE r.friend_user_id = #{friendUserId}
+          AND r.is_del = 0
+    </select>
+
+    <!-- 级联软删标签全部绑定（deleteTag 事务内，C13；post_visibility_tag 不级联自然失效） -->
+    <update id="updateIsDelByTagId">
+        UPDATE friend_tag_relation
+        SET is_del = 1
+        WHERE tag_id = #{tagId}
+          AND is_del = 0
+    </update>
+
+    <!-- 软删单条绑定（unbindUser；0 行命中=幂等成功） -->
+    <update id="updateIsDelByTagAndUser">
+        UPDATE friend_tag_relation
+        SET is_del = 1
+        WHERE tag_id = #{tagId}
+          AND friend_user_id = #{friendUserId}
+          AND is_del = 0
+    </update>
+
+    <!-- 批量插入（T090 复用）：tag_id + friend_user_id，通用字段走 DB 默认值 -->
+    <insert id="batchInsert">
+        INSERT INTO friend_tag_relation (tag_id, friend_user_id)
+        VALUES
+        <foreach collection="list" item="r" separator=",">
+            (#{r.tagId}, #{r.friendUserId})
+        </foreach>
+    </insert>
+
+    <!-- 软删全部（T090 clear=true 复用）：带 WHERE 条件，禁全表裸 UPDATE -->
+    <update id="logicDeleteAll">
+        UPDATE friend_tag_relation
+        SET is_del = 1
+        WHERE is_del = 0
+    </update>
+
+</mapper>

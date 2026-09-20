@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.funny.moments.dao.mapper.UserMapper">
+
+    <!-- 用户表基础列（显式列名 + 显式 resultMap，实体属性映射不依赖全局驼峰配置） -->
+    <resultMap id="BaseResultMap" type="com.funny.moments.dao.entity.UserDO">
+        <id column="id" property="id"/>
+        <result column="nickname" property="nickname"/>
+        <result column="avatar" property="avatar"/>
+        <result column="gender" property="gender"/>
+        <result column="city" property="city"/>
+        <result column="created_stime" property="createdStime"/>
+        <result column="modified_stime" property="modifiedStime"/>
+        <result column="is_del" property="isDel"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, nickname, avatar, gender, city, created_stime, modified_stime, is_del
+    </sql>
+
+    <!-- 分页查询：按 id 升序（注册顺序），保证分页确定性 -->
+    <select id="selectPageList" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM user
+        WHERE is_del = 0
+        ORDER BY id ASC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+
+    <!-- 批量按 ID 查询：好友/Feed 作者组装（防 N+1）；空集合由 Service 前置拦截，不进入本 SQL -->
+    <select id="selectByUserIds" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM user
+        WHERE is_del = 0
+        AND id IN
+        <foreach collection="userIds" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <!-- 总数统计 -->
+    <select id="countAll" resultType="java.lang.Long">
+        SELECT COUNT(*)
+        FROM user
+        WHERE is_del = 0
+    </select>
+
+    <!-- 批量插入（T090 复用）：useGeneratedKeys 回填自增 id，供好友关系/帖子生成引用 -->
+    <insert id="batchInsert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO user (nickname, avatar, gender, city)
+        VALUES
+        <foreach collection="list" item="u" separator=",">
+            (#{u.nickname}, #{u.avatar}, #{u.gender}, #{u.city})
+        </foreach>
+    </insert>
+
+    <!-- 软删全部（T090 clear=true 复用）：带 WHERE 条件，禁全表裸 UPDATE -->
+    <update id="logicDeleteAll">
+        UPDATE user
+        SET is_del = 1
+        WHERE is_del = 0
+    </update>
+
+</mapper>

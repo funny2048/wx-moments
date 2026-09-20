@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 朋友圈帖子表 Mapper（T060 建 files 含 selectUserPosts/updateIsDel/batchInsert/logicDeleteAll；
+     selectFeedPage 由 T080 追加，禁动本 task 既有语句；insert/selectById 复用 BaseMapper） -->
+<mapper namespace="com.funny.moments.dao.mapper.PostMapper">
+
+    <!-- 帖子表基础列（显式 resultMap，属性映射不依赖全局驼峰配置） -->
+    <resultMap id="BaseResultMap" type="com.funny.moments.dao.entity.PostDO">
+        <id column="id" property="id"/>
+        <result column="user_id" property="userId"/>
+        <result column="content" property="content"/>
+        <result column="visibility_type" property="visibilityType"/>
+        <result column="status" property="status"/>
+        <result column="created_stime" property="createdStime"/>
+        <result column="modified_stime" property="modifiedStime"/>
+        <result column="is_del" property="isDel"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, user_id, content, visibility_type, status, created_stime, modified_stime, is_del
+    </sql>
+
+    <!-- 按用户查询：idx_user_created 命中；双字段游标条件同 selectFeedPage 口径（C8，游标两参供 T070
+         放大补偿扫描复用，建议5）；首轮游标为 null 不追加条件 -->
+    <select id="selectUserPosts" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM post
+        WHERE user_id = #{userId}
+          AND is_del = 0
+          AND status = 1
+          <if test="cursorTime != null">
+              AND (created_stime &lt; #{cursorTime}
+                   OR (created_stime = #{cursorTime} AND id &lt; #{cursorId}))
+          </if>
+        ORDER BY created_stime DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- Feed 候选分批查询（T080 追加，design §5.4）：自己+好友的候选帖；私密帖非作者 SQL 预过滤
+         （R1：visibility_type != 2 OR user_id = viewerId，type=3/4 留 Service 层 canView 统一判定）；
+         双字段游标严格小于语义同 selectUserPosts 口径（C8）；idx_created_stime 命中时间扫描 -->
+    <select id="selectFeedPage" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM post
+        WHERE is_del = 0
+          AND status = 1
+          AND user_id IN
+        <foreach collection="userIds" item="userId" open="(" separator="," close=")">
+            #{userId}
+        </foreach>
+          AND (visibility_type != 2 OR user_id = #{viewerId})
+        <if test="cursorTime != null">
+              AND (created_stime &lt; #{cursorTime}
+                   OR (created_stime = #{cursorTime} AND id &lt; #{cursorId}))
+        </if>
+        ORDER BY created_stime DESC, id DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 软删帖子（deletePost；软删范围 is_del=0 防重复删；status 保留业务态快照 C7） -->
+    <update id="updateIsDel">
+        UPDATE post
+        SET is_del = 1
+        WHERE id = #{postId}
+          AND is_del = 0
+    </update>
+
+    <!-- 批量插入（T090 复用）：useGeneratedKeys 回填自增 id，供可见性两表外键生成；通用字段走 DB 默认值 -->
+    <insert id="batchInsert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO post (user_id, content, visibility_type, status)
+        VALUES
+        <foreach collection="list" item="p" separator=",">
+            (#{p.userId}, #{p.content}, #{p.visibilityType}, #{p.status})
+        </foreach>
+    </insert>
+
+    <!-- 软删全部（T090 clear=true 复用）：带 WHERE 条件，禁全表裸 UPDATE -->
+    <update id="logicDeleteAll">
+        UPDATE post
+        SET is_del = 1
+        WHERE is_del = 0
+    </update>
+
+</mapper>

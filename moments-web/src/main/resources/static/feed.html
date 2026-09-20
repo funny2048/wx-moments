@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>朋友圈 - 朋友圈实验室</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="page">
+    <div id="viewer-required" class="banner-warn">
+      Feed 需要当前用户视角：请点击顶部「当前视角」选择一个用户，选择后页面自动刷新。
+    </div>
+
+    <div id="feed-list"></div>
+    <div class="feed-footer" id="feed-footer">加载中...</div>
+  </main>
+
+  <script src="assets/app.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      App.mountHeader('朋友圈');
+
+      var PAGE_SIZE = 20;          // api.md 接口16：pageSize 缺省 20，范围 1-50
+      var EMPTY_STOP = 3;          // B1 前端停止规则：连续 3 次空页即停（即使 hasMore=true）
+
+      var listEl = document.getElementById('feed-list');
+      var footerEl = document.getElementById('feed-footer');
+
+      var state = {
+        cursor: null,              // 上一响应 nextCursor（不透明值，原样回传）
+        hasMore: true,
+        emptyStreak: 0,            // 连续空页计数
+        loading: false,
+        itemCount: 0
+      };
+
+      function renderFooter() {
+        if (state.loading) {
+          footerEl.innerHTML = '加载中...';
+          return;
+        }
+        if (state.hasMore) {
+          footerEl.innerHTML = '<button class="btn btn-plain" id="btn-more">加载更多</button>';
+          var btn = document.getElementById('btn-more');
+          if (btn) btn.addEventListener('click', loadMore);
+          return;
+        }
+        footerEl.innerHTML = state.itemCount > 0 ? '— 没有更多了 —' :
+          '暂无内容，去<a href="post-create.html">发布</a>第一条朋友圈吧';
+      }
+
+      async function loadMore() {
+        if (state.loading || !state.hasMore) return;
+        if (!App.needViewer()) { renderFooter(); return; }
+        state.loading = true;
+        renderFooter();
+        try {
+          // api.md 接口16：GET /api/feed（cursor 首页不传，后续传上页 nextCursor）
+          var path = '/api/feed?pageSize=' + PAGE_SIZE;
+          if (state.cursor) path += '&cursor=' + encodeURIComponent(state.cursor);
+          var data = await App.api(path);
+          var items = (data && data.items) || [];
+
+          items.forEach(function (it) {
+            listEl.insertAdjacentHTML('beforeend', App.postCardHtml(it, { deletable: true }));
+          });
+          state.itemCount += items.length;
+          state.cursor = (data && data.nextCursor) || null;
+          state.hasMore = !!(data && data.hasMore);
+          state.emptyStreak = items.length === 0 ? state.emptyStreak + 1 : 0;
+
+          if (state.emptyStreak >= EMPTY_STOP) {
+            // B1：连续 3 空页停止加载（防极端全不可见候选流下的持续空页请求）
+            state.hasMore = false;
+            App.toast('暂无更多内容');
+          } else if (items.length === 0 && state.hasMore && state.cursor) {
+            // 合法组合 items=[] && hasMore=true：携带扫描进度游标自动续页
+            state.loading = false;
+            setTimeout(loadMore, 60);
+            return;
+          }
+        } catch (e) {
+          /* api 已 toast；保留当前游标态，可手动重试 */
+        } finally {
+          state.loading = false;
+        }
+        renderFooter();
+      }
+
+      // 滚动到底自动加载（节流）
+      var scrolling = false;
+      window.addEventListener('scroll', function () {
+        if (scrolling) return;
+        scrolling = true;
+        requestAnimationFrame(function () {
+          scrolling = false;
+          if (window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 300) {
+            loadMore();
+          }
+        });
+      });
+
+      // 删除帖子后从 DOM 移除卡片
+      App.bindPostDelete(listEl, function (postId) {
+        var card = listEl.querySelector('.feed-card[data-post-id="' + postId + '"]');
+        if (card) card.remove();
+        state.itemCount = Math.max(0, state.itemCount - 1);
+        if (state.itemCount === 0 && !state.hasMore) renderFooter();
+      });
+
+      loadMore();
+    })();
+  </script>
+</body>
+</html>

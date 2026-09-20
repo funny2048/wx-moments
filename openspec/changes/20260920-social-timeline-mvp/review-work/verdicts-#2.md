@@ -1,0 +1,1 @@
+{"verdict":"REJECT","score":50,"reason":"代码事实全部属实（无鉴权/无@Profile/8表软删/MAX_USER_COUNT=100000 均核实），但免鉴权系冻结基线显式裁决：api.md 接口11 权限列'否'、design §3 '实验室工具接口'、§7.3 全项目无登录体系为对抗审查+用户评审后的显式接受，§11 上线仅本地实验室（本地MySQL/localhost），100k 性能已留痕 §12-4；SchemaInitRunner 的 @Profile('dev') 是 D1/A6 组件级设计指定而非项目级守卫标准，本控制器无未落实的设计承诺——候选实质是重审已冻结的实验室免鉴权姿态，剩余价值为建议级加固（可加 @Profile("dev") 或服务端确认 token）。"}

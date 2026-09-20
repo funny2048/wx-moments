@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 好友标签表 Mapper（T020 建 files 含 selectByTagId；T030 追加 selectByUserId/updateTagName/
+     updateIsDel/batchInsert/countFriendsByTagIds/logicDeleteAll，禁动 T020 既有语句） -->
+<mapper namespace="com.funny.moments.dao.mapper.FriendTagMapper">
+
+    <!-- 标签表基础列（显式 resultMap，属性映射不依赖全局驼峰配置） -->
+    <resultMap id="BaseResultMap" type="com.funny.moments.dao.entity.FriendTagDO">
+        <id column="id" property="id"/>
+        <result column="user_id" property="userId"/>
+        <result column="tag_name" property="tagName"/>
+        <result column="created_stime" property="createdStime"/>
+        <result column="modified_stime" property="modifiedStime"/>
+        <result column="is_del" property="isDel"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, user_id, tag_name, created_stime, modified_stime, is_del
+    </sql>
+
+    <!-- 按标签 ID 点查：主键命中；null=不存在或已删除（1004） -->
+    <select id="selectByTagId" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM friend_tag
+        WHERE id = #{tagId}
+          AND is_del = 0
+    </select>
+
+    <!-- 按归属人查标签列表：idx_user 命中；id 升序=创建顺序（与 tagNames 按标签 id 排序口径一致） -->
+    <select id="selectByUserId" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM friend_tag
+        WHERE user_id = #{userId}
+          AND is_del = 0
+        ORDER BY id ASC
+    </select>
+
+    <!-- 改名：最小更新载体只含 id + tag_name（java-guide 2.3，禁止把查出完整实体直接传入更新） -->
+    <update id="updateTagName">
+        UPDATE friend_tag
+        SET tag_name = #{tag.tagName}
+        WHERE id = #{tag.id}
+          AND is_del = 0
+    </update>
+
+    <!-- 软删标签（deleteTag 事务内；软删范围 is_del=0 防重复删） -->
+    <update id="updateIsDel">
+        UPDATE friend_tag
+        SET is_del = 1
+        WHERE id = #{tagId}
+          AND is_del = 0
+    </update>
+
+    <!-- 批量插入（T090 复用）：user_id + tag_name，通用字段走 DB 默认值 -->
+    <insert id="batchInsert">
+        INSERT INTO friend_tag (user_id, tag_name)
+        VALUES
+        <foreach collection="list" item="t" separator=",">
+            (#{t.userId}, #{t.tagName})
+        </foreach>
+    </insert>
+
+    <!-- 标签好友数统计：COUNT(DISTINCT friend_user_id)（R2-建议8，与 tagNames 去重口径一致）；
+         tagIds 已限定 owner（selectByUserId 结果），无需 join 标签表 -->
+    <select id="countFriendsByTagIds" resultType="com.funny.moments.dao.dto.TagFriendCountDTO">
+        SELECT r.tag_id AS tagId, COUNT(DISTINCT r.friend_user_id) AS friendCount
+        FROM friend_tag_relation r
+        WHERE r.is_del = 0
+          AND r.tag_id IN
+        <foreach collection="tagIds" item="tid" open="(" separator="," close=")">
+            #{tid}
+        </foreach>
+        GROUP BY r.tag_id
+    </select>
+
+    <!-- 批量按归属人查标签（T090 追加，独立语句块）：模拟数据 tagId 回读组装
+         （friend_tag 的 batchInsert 不回填自增 id）；ownerIds ≤500 分批由调用方保证 -->
+    <select id="selectByOwnerIds" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM friend_tag
+        WHERE is_del = 0
+        AND user_id IN
+        <foreach collection="ownerIds" item="oid" open="(" separator="," close=")">
+            #{oid}
+        </foreach>
+        ORDER BY user_id ASC, id ASC
+    </select>
+
+    <!-- 软删全部（T090 clear=true 复用）：带 WHERE 条件，禁全表裸 UPDATE -->
+    <update id="logicDeleteAll">
+        UPDATE friend_tag
+        SET is_del = 1
+        WHERE is_del = 0
+    </update>
+
+</mapper>

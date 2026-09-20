@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>我的好友 - 朋友圈实验室</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="page">
+    <div id="viewer-required" class="banner-warn">
+      本页需要当前用户视角：请点击顶部「当前视角」选择一个用户，选择后页面自动刷新。
+    </div>
+
+    <div class="filter-bar">
+      <select id="tag-filter"><option value="">按标签过滤：全部好友</option></select>
+      <a class="btn btn-plain btn-sm" href="friend-tags.html">管理标签绑定</a>
+    </div>
+
+    <div class="card">
+      <div class="card-title">好友列表<span class="title-extra" id="friend-count"></span></div>
+      <div id="friend-list">加载中...</div>
+    </div>
+  </main>
+
+  <script src="assets/app.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      App.mountHeader('我的好友');
+
+      var filterEl = document.getElementById('tag-filter');
+      var listEl = document.getElementById('friend-list');
+      var countEl = document.getElementById('friend-count');
+
+      // 我的标签下拉（过滤数据源，api.md 接口5）
+      async function loadTagFilter(selectedTagId) {
+        try {
+          var tags = await App.api('/api/friend-tags') || [];
+          var html = '<option value="">按标签过滤：全部好友</option>';
+          tags.forEach(function (t) {
+            html += '<option value="' + App.esc(t.tagId) + '"' +
+              (String(t.tagId) === String(selectedTagId) ? ' selected' : '') + '>' +
+              App.esc(t.tagName) + '（' + App.esc(t.friendCount) + '人）</option>';
+          });
+          filterEl.innerHTML = html;
+        } catch (e) {
+          /* api 已 toast；过滤下拉保持"全部" */
+        }
+      }
+
+      function rowHtml(f) {
+        var tags = f.tagNames || [];
+        return '<a class="list-row" href="friend-detail.html?userId=' + App.esc(f.userId) + '">' +
+          '<img class="avatar" alt="头像" src="' + App.avatarSrc(f.avatar) +
+          '" onerror="this.onerror=null;this.src=App.DEFAULT_AVATAR">' +
+          '<div class="list-main">' +
+          '<div class="list-title">' + App.esc(f.nickname) +
+          '<span class="muted small">#' + App.esc(f.userId) + '</span></div>' +
+          '<div class="list-sub">' + App.esc(f.genderStr) + ' · ' + App.esc(f.city || '未知城市') + '</div>' +
+          '<div class="tag-chips">' + (tags.length
+            ? tags.map(function (t) { return '<span class="tag-chip">' + App.esc(t) + '</span>'; }).join('')
+            : '<span class="small" style="color:#c9c9c9">未打标签</span>') + '</div>' +
+          '</div>' +
+          '<span class="small muted">详情 &gt;</span>' +
+          '</a>';
+      }
+
+      // api.md 接口3：GET /api/friends?tagId=（可选过滤，全量返回）
+      async function loadFriends() {
+        if (!App.needViewer()) { listEl.innerHTML = App.emptyHtml('选择视角后展示好友'); return; }
+        listEl.innerHTML = '加载中...';
+        var tagId = filterEl.value;
+        try {
+          var friends = await App.api('/api/friends' + (tagId ? '?tagId=' + encodeURIComponent(tagId) : '')) || [];
+          countEl.textContent = '共 ' + friends.length + ' 位好友';
+          listEl.innerHTML = friends.length
+            ? friends.map(rowHtml).join('')
+            : App.emptyHtml(tagId ? '该标签下暂无好友' : '暂无好友，可先到「模拟数据生成」页造数据');
+        } catch (e) {
+          listEl.innerHTML = App.emptyHtml('加载失败');
+        }
+      }
+
+      filterEl.addEventListener('change', loadFriends);
+
+      var initialTagId = App.getQueryParam('tagId');
+      if (initialTagId && /^\d+$/.test(initialTagId)) {
+        // 从标签管理页"查看好友"跳转带入 tagId
+        filterEl.innerHTML = '<option value="' + App.esc(initialTagId) + '" selected>标签 ' + App.esc(initialTagId) + '</option>';
+        loadFriends();
+        loadTagFilter(initialTagId);
+      } else {
+        loadFriends();
+        loadTagFilter();
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- 帖子图片表 Mapper（T060 建 files 含 batchInsert/logicDeleteAll；selectByPostId/selectByPostIds
+     已由 T070 追加（T080 Feed 直接复用），禁动既有语句） -->
+<mapper namespace="com.funny.moments.dao.mapper.PostImageMapper">
+
+    <!-- 图片表基础列（显式 resultMap，属性映射不依赖全局驼峰配置；后续 task 追加查询复用） -->
+    <resultMap id="BaseResultMap" type="com.funny.moments.dao.entity.PostImageDO">
+        <id column="id" property="id"/>
+        <result column="post_id" property="postId"/>
+        <result column="image_url" property="imageUrl"/>
+        <result column="sort" property="sort"/>
+        <result column="created_stime" property="createdStime"/>
+        <result column="modified_stime" property="modifiedStime"/>
+        <result column="is_del" property="isDel"/>
+    </resultMap>
+
+    <sql id="Base_Column_List">
+        id, post_id, image_url, sort, created_stime, modified_stime, is_del
+    </sql>
+
+    <!-- 批量插入（发帖事务内 sort=1..n；T090 复用）：post_id + image_url + sort，通用字段走 DB 默认值 -->
+    <insert id="batchInsert">
+        INSERT INTO post_image (post_id, image_url, sort)
+        VALUES
+        <foreach collection="list" item="img" separator=",">
+            (#{img.postId}, #{img.imageUrl}, #{img.sort})
+        </foreach>
+    </insert>
+
+    <!-- 查询单帖图片（帖子详情组装，T070 追加）：idx_post 命中；sort 升序即发帖时的图片顺序 -->
+    <select id="selectByPostId" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM post_image
+        WHERE post_id = #{postId}
+          AND is_del = 0
+        ORDER BY sort ASC, id ASC
+    </select>
+
+    <!-- 批量查询多帖图片（按用户查列表/Feed 批量组装防 N+1，T070 追加，T080 复用）：
+         按 post_id+sort 排序，分组后组内顺序即展示顺序 -->
+    <select id="selectByPostIds" resultMap="BaseResultMap">
+        SELECT
+        <include refid="Base_Column_List"/>
+        FROM post_image
+        WHERE is_del = 0
+          AND post_id IN
+        <foreach collection="postIds" item="postId" open="(" separator="," close=")">
+            #{postId}
+        </foreach>
+        ORDER BY post_id ASC, sort ASC, id ASC
+    </select>
+
+    <!-- 软删全部（T090 clear=true 复用）：带 WHERE 条件，禁全表裸 UPDATE -->
+    <update id="logicDeleteAll">
+        UPDATE post_image
+        SET is_del = 1
+        WHERE is_del = 0
+    </update>
+
+</mapper>

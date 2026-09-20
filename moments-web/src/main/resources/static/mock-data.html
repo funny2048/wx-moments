@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>模拟数据生成 - 朋友圈实验室</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <div id="app-header"></div>
+
+  <main class="page">
+    <div class="card">
+      <div class="card-title">生成配置<span class="title-extra">POST /api/mock-data</span></div>
+
+      <div class="field">
+        <div class="field-label"><span>用户数量（userCount）</span><span class="muted">1 - 100000</span></div>
+        <input class="input" id="cfg-user-count" type="number" min="1" max="100000" value="100">
+      </div>
+      <div class="field">
+        <div class="field-label"><span>人均好友数（avgFriendsPerUser）</span><span class="muted">0 - 500</span></div>
+        <input class="input" id="cfg-avg-friends" type="number" min="0" max="500" value="10">
+      </div>
+      <div class="field">
+        <div class="field-label"><span>每用户额外标签数（extraTagsPerUser）</span><span class="muted">0 - 20</span></div>
+        <input class="input" id="cfg-extra-tags" type="number" min="0" max="20" value="0">
+      </div>
+      <div class="field">
+        <div class="field-label"><span>生成帖子数（postCount）</span><span class="muted">0 - 10000</span></div>
+        <input class="input" id="cfg-post-count" type="number" min="0" max="10000" value="50">
+      </div>
+
+      <label class="radio-item" style="margin-bottom:12px">
+        <input type="checkbox" id="cfg-clear">
+        <span>先清空现有数据再生成（clear）</span>
+      </label>
+      <div class="small error-text" id="clear-warn" style="display:none;margin:-6px 0 12px">
+        勾选后 8 张表全部现有业务数据将被软删后重建，且需二次确认，请谨慎操作。
+      </div>
+
+      <button class="btn btn-block" id="btn-generate">生成模拟数据</button>
+      <div class="small muted" style="margin-top:8px;text-align:center">
+        大数据量生成耗时较长（分批写入），期间请勿关闭页面
+      </div>
+    </div>
+
+    <div class="card" id="result-card" style="display:none">
+      <div class="card-title">生成结果</div>
+      <table class="stat-table" id="stat-table"></table>
+    </div>
+  </main>
+
+  <script src="assets/app.js"></script>
+  <script>
+    (function () {
+      'use strict';
+      App.mountHeader('模拟数据生成');
+
+      // 配置项与合法范围（api.md 接口11；越界服务端返回 1040，前端先拦一道）
+      var RANGES = [
+        { el: document.getElementById('cfg-user-count'), min: 1, max: 100000, name: '用户数量' },
+        { el: document.getElementById('cfg-avg-friends'), min: 0, max: 500, name: '人均好友数' },
+        { el: document.getElementById('cfg-extra-tags'), min: 0, max: 20, name: '额外标签数' },
+        { el: document.getElementById('cfg-post-count'), min: 0, max: 10000, name: '帖子数' }
+      ];
+      var clearEl = document.getElementById('cfg-clear');
+      var clearWarn = document.getElementById('clear-warn');
+      var btn = document.getElementById('btn-generate');
+      var resultCard = document.getElementById('result-card');
+      var statTable = document.getElementById('stat-table');
+
+      clearEl.addEventListener('change', function () {
+        clearWarn.style.display = clearEl.checked ? 'block' : 'none';
+      });
+
+      function readConfig() {
+        var cfg = {};
+        for (var i = 0; i < RANGES.length; i++) {
+          var r = RANGES[i];
+          var raw = r.el.value.trim();
+          if (raw === '' || !/^\d+$/.test(raw)) {
+            App.toast(r.name + '须为非负整数');
+            return null;
+          }
+          var num = Number(raw);
+          if (num < r.min || num > r.max) {
+            App.toast(r.name + '范围为 ' + r.min + ' - ' + r.max);
+            return null;
+          }
+          cfg[r.el.id] = num;
+        }
+        return {
+          userCount: cfg['cfg-user-count'],
+          avgFriendsPerUser: cfg['cfg-avg-friends'],
+          extraTagsPerUser: cfg['cfg-extra-tags'],
+          postCount: cfg['cfg-post-count'],
+          clear: clearEl.checked
+        };
+      }
+
+      function fmtElapsed(ms) {
+        if (ms === null || ms === undefined) return '-';
+        return ms >= 1000 ? (ms / 1000).toFixed(1) + ' 秒（' + ms + ' ms）' : ms + ' ms';
+      }
+
+      btn.addEventListener('click', App.withLoading(btn, '生成中，请稍候...', async function () {
+        var body = readConfig();
+        if (!body) return;
+        if (body.clear) {
+          // clear 二次确认（api.md §1.5：clear=true 清空重建，页面须二次确认）
+          var ok = window.confirm(
+            '已勾选「先清空现有数据再生成」。\n\n' +
+            '8 张表当前全部用户 / 好友 / 标签 / 帖子数据将被软删后重新生成，该操作不可撤销。\n\n确定继续吗？');
+          if (!ok) return;
+        }
+        try {
+          var data = await App.api('/api/mock-data', { method: 'POST', body: body });
+          var rows = [
+            ['实际生成用户数', data.userCount + ' 个'],
+            ['好友关系对数', data.friendshipPairs + ' 对'],
+            ['好友关系记录数', data.friendshipRecords + ' 条'],
+            ['生成标签总数', data.tagCount + ' 个'],
+            ['标签绑定总数', data.bindingCount + ' 条'],
+            ['生成帖子数', data.postCount + ' 条'],
+            ['占位图池文件数', data.imagePoolSize + ' 个'],
+            ['耗时', fmtElapsed(data.elapsedMs)]
+          ];
+          statTable.innerHTML = rows.map(function (r) {
+            return '<tr><th>' + App.esc(r[0]) + '</th><td>' + App.esc(r[1]) + '</td></tr>';
+          }).join('');
+          resultCard.style.display = 'block';
+          App.toast('生成完成');
+          resultCard.scrollIntoView({ behavior: 'smooth' });
+        } catch (e) {
+          /* api 已 toast（1040 配置非法等） */
+        }
+      }));
+    })();
+  </script>
+</body>
+</html>
